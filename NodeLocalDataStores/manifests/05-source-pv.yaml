@@ -1,0 +1,76 @@
+# A PersistentVolume pointing at the same NFS export ArcGIS already reads, so
+# the agent can mount it from its own namespace. This creates no storage and
+# alters no existing volume.
+#
+# Two claims against one NFS export do not conflict where the export is
+# ReadWriteMany and the existing mounts are read-only. Confirm that before
+# applying: check the access mode and the readOnly flag on the volume ArcGIS
+# uses today.
+#
+# WHY CSI RATHER THAN spec.nfs. The in-tree NFS plugin shells out to
+# `mount -t nfs`, which needs the mount.nfs helper from nfs-utils on the host.
+# Bottlerocket ships no such helper and the mount fails with "NFS: mount program
+# didn't pass remote address". csi-driver-nfs performs the mount inside a
+# container that carries nfs-utils, so it works on both Bottlerocket and AL2023.
+#
+# Install the driver before applying this:
+#
+#     helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+#     helm install csi-driver-nfs csi-driver-nfs/csi-driver-nfs -n kube-system
+#     kubectl get csidrivers nfs.csi.k8s.io
+#
+# This covers the agent's claim only. An existing in-tree NFS volume that ArcGIS
+# service pods depend on keeps working only while those pods run on nodes with
+# the host helper. Migrating it is a separate decision.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: geodata-source-sc
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: Immediate
+reclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: geodata-source-pv
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+spec:
+  capacity:
+    # Advisory only for a static NFS volume. Match the existing PV so the two
+    # read consistently.
+    storage: 1000Gi
+  accessModes:
+    - ReadWriteMany
+  # Retain, so deleting the claim during teardown cannot propagate anything
+  # toward the source export.
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: geodata-source-sc
+
+  # nconnect multiplies concurrency that already exists; it does nothing for a
+  # single-threaded reader. It matters here because the agent runs parallel
+  # transfers, and a single TCP flow is subject to a per-flow bandwidth limit on
+  # AWS. Raise it only once your filesystem has IOPS headroom, otherwise the
+  # connection limit cannot show and the change measures as a null result.
+  mountOptions:
+    - nfsvers=4.1
+    - nconnect=16
+
+  csi:
+    driver: nfs.csi.k8s.io
+    # Must be unique cluster-wide. server#share#pv-name keeps it unique and
+    # readable, and distinct from any claim ArcGIS holds on the same export.
+    volumeHandle: __NFS_SERVER__#__NFS_SHARE_NAME__#geodata-source-pv
+    readOnly: true
+    volumeAttributes:
+      server: __NFS_SERVER__
+      share: __NFS_SHARE_PATH__
+
+  # Pre-bind, so this volume cannot be picked up by an unrelated pending claim.
+  claimRef:
+    namespace: geodata-sync
+    name: geodata-source-pvc

@@ -1,0 +1,145 @@
+# The sync agent. One pod per dedicated node, copying datasets from the NFS
+# export onto that node's local storage, removing the bootstrap taint after the
+# first successful pass, and labelling the node with the generation it holds
+# after every successful pass.
+#
+# This is a customer-owned component. Build the image from ../agent/Dockerfile
+# and push it to your own registry.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: geodata-sync-agent
+  namespace: geodata-sync
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+spec:
+  selector:
+    matchLabels:
+      app: geodata-sync-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: geodata-sync-agent
+        __LABEL_DOMAIN__/component: node-local-data-stores
+    spec:
+      serviceAccountName: geodata-sync-agent
+
+      nodeSelector:
+        __LABEL_DOMAIN__/workload: geodata
+
+      # The agent must be the one thing that can schedule onto a node that is not
+      # yet ready, since it is what makes the node ready.
+      tolerations:
+        - key: __LABEL_DOMAIN__/data-not-ready
+          value: "true"
+          effect: NoSchedule
+        - key: __LABEL_DOMAIN__/dedicated
+          value: geodata
+          effect: NoSchedule
+
+      # The agent gates every service pod on these nodes. If it is evicted under
+      # pressure, nothing else can become ready.
+      priorityClassName: system-node-critical
+
+      # SIGTERM finishes the dataset in flight before exiting, so the grace
+      # period must cover a full dataset copy. The cost of being wrong is
+      # asymmetric: too long only delays a drain, too short kills a transfer
+      # mid-dataset and leaves a partial copy. Draining one of these nodes can
+      # therefore block for the length of a full sync.
+      terminationGracePeriodSeconds: 4800
+
+      containers:
+        - name: sync-agent
+          image: __IMAGE_REPOSITORY__/geodata-sync-agent:0.4.0
+          imagePullPolicy: IfNotPresent
+
+          args:
+            - --source=/mnt/source
+            - --dest-root=/mnt/data
+            - --interval=300
+            # Transfer concurrency. --multi-thread-streams is the one that
+            # matters: it is intra-file parallelism, which a whole-file copier
+            # has no equivalent for. On a dataset whose largest member is a
+            # single ~180 GB file, that is the difference between a five-minute
+            # sync and a twenty-minute one. Both figures were measured rather
+            # than chosen; see ../tuning/rclone.md before changing them.
+            - --transfers=8
+            - --multi-thread-streams=8
+            # Skip the split archives that sit beside the extracted dataset.
+            # They are the transfer format of data already present and no
+            # service reads them.
+            - --exclude=*.zip.*
+            - --exclude=*.zip
+
+          env:
+            # The agent patches its own node, identified here.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Must match the domain used for the label and taint keys above.
+            - name: LABEL_DOMAIN
+              value: __LABEL_DOMAIN__
+
+          securityContext:
+            # The copy preserves ownership onto a host path.
+            runAsUser: 0
+            privileged: false
+            allowPrivilegeEscalation: false
+
+          volumeMounts:
+            - name: source
+              mountPath: /mnt/source
+              readOnly: true
+            - name: node-local-data
+              mountPath: /mnt/data
+
+          resources:
+            requests:
+              # No CPU limit is set, so this is a scheduling weight rather than a
+              # cap: on an idle node the agent still uses about a core. Where a
+              # low request costs something is a routine update rather than the
+              # first sync, since a re-sync competes with service pods that have
+              # real requests and the new generation simply lands later.
+              cpu: 10m
+              # Equal to the limit, deliberately. Usage then cannot exceed the
+              # request without hitting the limit first, so the kubelet cannot
+              # select this pod on the "over its request" eviction path.
+              memory: 1Gi
+            limits:
+              # MEASURED, not estimated. Peak anonymous memory during a cold sync
+              # is roughly 560 MiB at these concurrency settings, so 1Gi is about
+              # 1.8x headroom. 512Mi is not survivable: the copy is OOMKilled
+              # within seconds. Re-measure before lowering this, because memory
+              # scales with transfers x multi-thread-streams and an OOMKill
+              # mid-sync leaves the node without data.
+              memory: 1Gi
+
+      volumes:
+        - name: source
+          persistentVolumeClaim:
+            claimName: geodata-source-pvc
+            readOnly: true
+
+        - name: node-local-data
+          hostPath:
+            # staging/ and active/ are both created under this one path, which
+            # puts them on a single filesystem. The rename that publishes a new
+            # generation is atomic only within a filesystem; splitting them
+            # across mounts turns it into a copy and reopens the window where a
+            # service can read a half-written dataset.
+            #
+            # On a node without instance store this is an ordinary directory on
+            # the EBS data volume. That is the failure mode to watch for: the
+            # sync succeeds and reads come from the wrong device. 02- guards it
+            # twice, with essential: true on the bind and a data volume too small
+            # to hold the dataset.
+            path: /mnt/geodata
+            # Correct for the agent's own destination, where the path does not
+            # yet exist on a fresh node. Do not generalise it to the consumption
+            # side; see 08- and 09-.
+            type: DirectoryOrCreate

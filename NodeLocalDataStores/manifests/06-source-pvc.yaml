@@ -1,0 +1,17 @@
+# Binds to geodata-source-pv by the claimRef declared there. The storage class
+# is a static no-provisioner class, so nothing is dynamically provisioned.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: geodata-source-pvc
+  namespace: geodata-sync
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: geodata-source-sc
+  volumeName: geodata-source-pv
+  resources:
+    requests:
+      storage: 1000Gi

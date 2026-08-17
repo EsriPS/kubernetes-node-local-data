@@ -1,0 +1,88 @@
+# Warm capacity, which a Karpenter NodePool has no equivalent of.
+#
+# Karpenter launches nodes only when pending pods need them, and DaemonSets do
+# not count: a DaemonSet schedules onto nodes that already exist. With 03-
+# applied and nothing else, the pool sits at zero nodes, and the first service
+# pod to be scheduled would trigger a node launch and then wait out a full sync
+# before it could serve anything. These placeholders hold nodes open so the data
+# is already there when real workload arrives.
+#
+# THESE PODS DO NOT CREATE NODES BY THEMSELVES. They create a node only when no
+# existing schedulable node satisfies them. When replacing capacity that carries
+# the same label, cordon the old nodes first and then delete these pods so they
+# reschedule. Cordoning alone is not enough, because already-running placeholders
+# stay where they are.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: geodata-warm-capacity
+# Negative, so these sort below everything else including pods with no priority
+# class. If the pool is genuinely full, the scheduler evicts a placeholder rather
+# than a real pod.
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: >-
+  Holds dedicated nodes open so node-local data is staged before workload
+  arrives. Lowest priority in the cluster.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: geodata-warm-capacity
+  namespace: geodata-sync
+  labels:
+    app: geodata-warm-capacity
+    __LABEL_DOMAIN__/component: node-local-data-stores
+spec:
+  # This is the knob that sets the warm node count.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: geodata-warm-capacity
+  template:
+    metadata:
+      labels:
+        app: geodata-warm-capacity
+    spec:
+      priorityClassName: geodata-warm-capacity
+
+      nodeSelector:
+        __LABEL_DOMAIN__/workload: geodata
+
+      # Tolerating the bootstrap gate as well as the permanent taint means the
+      # placeholder settles onto the node as it registers, rather than waiting
+      # out the sync, which is what makes it a reliable pin.
+      tolerations:
+        - key: __LABEL_DOMAIN__/data-not-ready
+          value: "true"
+          effect: NoSchedule
+        - key: __LABEL_DOMAIN__/dedicated
+          value: geodata
+          effect: NoSchedule
+
+      # THIS is what forces distinct nodes, not the resource requests below.
+      # Required anti-affinity on hostname means two replicas cannot be satisfied
+      # by fewer than two nodes, and Karpenter honours it in its scheduling
+      # simulation. The alternative pattern, requesting most of a node's CPU,
+      # also works but reserves that capacity away from the services for nothing.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: geodata-warm-capacity
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10
+          resources:
+            # Requests are non-zero only so the pod is not BestEffort.
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 16Mi
+      terminationGracePeriodSeconds: 0

@@ -1,0 +1,96 @@
+# The AWS-side shape of the dedicated nodes: AMI, disks, subnets, security
+# groups, instance profile. The scheduling half is in 03-nodepool.yaml, and both
+# are required before Karpenter launches anything.
+#
+# This example uses Bottlerocket. The instance-store bootstrap below is
+# Bottlerocket-specific; on AL2023 the equivalent is a userData script that
+# formats and mounts the instance store itself.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: geodata-nodes
+spec:
+  role: __NODE_IAM_ROLE__
+
+  # PIN THE AMI. Karpenter treats a newly published AMI as drift and replaces
+  # every node running the old one, which on this pool discards several hundred
+  # gigabytes of node-local data and re-runs the bootstrap on a schedule set by
+  # the OS release cadence. Upgrades here are a supervised operation: change the
+  # version, then watch the replacement through.
+  amiSelectorTerms:
+    - alias: __AMI_ALIAS__
+
+  subnetSelectorTerms:
+    - id: __SUBNET_ID_1__
+    - id: __SUBNET_ID_2__
+
+  # Must reach the NFS export the agent reads from.
+  securityGroupSelectorTerms:
+    - id: __SECURITY_GROUP_ID__
+
+  # Bottlerocket has two volumes and Karpenter will not infer the split.
+  # Declaring only one mapping leaves the data volume at its 20 GiB default, and
+  # the failure surfaces mid-sync as a disk-full error rather than at apply time.
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 4Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+
+    # /var/lib, so container images, containerd and kubelet state. The dataset
+    # does NOT live here; it is on the instance store bound below.
+    #
+    # KEEPING THIS TOO SMALL TO HOLD THE DATASET IS DELIBERATE. It is the second
+    # guard against the dataset silently landing on EBS. The first is
+    # essential: true on the bootstrap entry, which stops the node joining.
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeSize: 300Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+
+  # THE DATASET GOES ON INSTANCE-STORE NVMe.
+  #
+  # instanceStorePolicy: RAID0 is deliberately NOT set. Karpenter's Bottlerocket
+  # implementation emits its own ephemeral-storage bootstrap commands and binds
+  # only kubelet, containerd and pod logs, never an arbitrary path. Setting it
+  # alongside the commands below means both call init with no ordering guarantee
+  # between them. Leaving it unset also keeps Karpenter's allocatable
+  # ephemeral-storage accounting honest, since kubelet and containerd stay on the
+  # EBS data volume above.
+  #
+  # THE BIND TARGET MUST BE UNDER /mnt/. Bottlerocket allow-lists bind targets:
+  # five named Kubernetes directories, plus anything under /mnt/. Anything else
+  # is rejected with "specified bind directory not in allow list". Check the
+  # allow-list on your AMI with `apiclient ephemeral-storage list-dirs`.
+  #
+  # essential: true IS THE POINT. A rejected bind must halt the boot. The
+  # alternative is a node that joins, syncs several hundred gigabytes onto EBS,
+  # and serves reads from the wrong device.
+  #
+  # BOTH COMMANDS MUST STAY IN ONE ENTRY. Karpenter serialises the userData TOML
+  # map alphabetically, so as separate entries `bind` is written ahead of `init`
+  # and runs first. `bind` returns success when ephemeral storage is not yet
+  # initialised, so nothing fails, the node joins, and the dataset goes to EBS.
+  # Commands inside a single entry run in the order given.
+  #
+  # init formats the instance store, striping several devices into one array
+  # where the instance type has more than one. With a single device there is no
+  # array and /dev/md does not exist, which is expected. bind then creates
+  # /mnt/geodata, mounts it and marks it rshared, which is what makes it visible
+  # to kubelet and to hostPath volumes. The directory need not pre-exist.
+  #
+  # Verify from a pod that hostPath-mounts /mnt/geodata. `kubectl debug node/...`
+  # cannot answer this: it gets its own mount namespace and does not see the
+  # host's mounts.
+  userData: |
+    [settings.bootstrap-commands.geodata-nvme]
+    commands = [["apiclient", "ephemeral-storage", "init"], ["apiclient", "ephemeral-storage", "bind", "--dirs", "/mnt/geodata"]]
+    mode = "always"
+    essential = true
+
+  tags:
+    __LABEL_DOMAIN__/component: node-local-data-stores

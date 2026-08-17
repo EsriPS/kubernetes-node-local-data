@@ -1,0 +1,126 @@
+# GEOCODING ONLY. The local PersistentVolume that lets geocoding services read
+# the node-local data the agent writes.
+#
+# GEOCODING AND ROUTING USE DIFFERENT MECHANISMS
+#
+# ArcGIS Enterprise on Kubernetes supports local PersistentVolumes as PV-based
+# folder data stores for geocoding services. It does not support them for routing
+# services, which still require a hostPath folder data store.
+#
+#     geocoding  ->  local PersistentVolume, this file,
+#                    registered in Enterprise Manager
+#     routing    ->  hostPath folder data store, no PV or PVC at all,
+#                    prerequisite 08-path-shim.yaml,
+#                    registered only through the Admin REST API
+#
+# Both read the same node-local tree the agent produces, /mnt/geodata/active.
+# Two data stores are registered, not one. For the general PV-based folder data
+# store reference, see ../../PVsAsDataStores/README.md.
+#
+# The two differ sharply in blast radius. Registering the local PV is scoped and
+# touches no running pods. Registering the hostPath store is not scoped: ArcGIS
+# adds the mount organisation-wide, so the path must exist on every node running
+# any ArcGIS service pod.
+#
+# REGISTRATION FORM VALUES, which must agree with the spec below. A claim binds
+# only to a volume whose access modes include the requested mode and whose
+# capacity is at least the requested size. A mismatch produces the unhelpful
+# "Volume with ID: ... did not bind within the expected time".
+#
+#     Access mode              Read Only Many
+#     Size (GiB)               600
+#     Storage class name       geodata-local-sc
+#     Persistent volume name   geodata-local-pv
+#     Volume path              /mnt/geodata/active
+#     "local persistent volume for routing or geocoding services"  -> TICKED
+#
+# CHANGING spec.local.path IS A DELETE AND RECREATE, IN THIS ORDER. A volume's
+# source is immutable, and ArcGIS owns the claim bound to it. Recreating the
+# volume while that claim exists leaves it Released with a stale claimRef, which
+# never rebinds.
+#
+#   1. Deregister the geocoding folder data store in Enterprise Manager.
+#   2. Confirm the ArcGIS claim is gone and the volume is not Bound.
+#   3. Delete and re-apply this file.
+#   4. Re-register, with the form values above.
+#
+# Apply after the agent has completed a first pass on every node in the pool,
+# because spec.local.path must already exist on the node.
+---
+# A storage class exists here only to carry volumeBindingMode. Local volumes must
+# bind late: the scheduler has to choose a node before the claim is bound, or it
+# could bind to a volume on a node the pod cannot run on.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: geodata-local-sc
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+# Never reclaim node-local data automatically. Deleting a claim must not touch
+# what the agent copied.
+reclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: geodata-local-pv
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+spec:
+  # Advisory only for a local volume, since nothing enforces a quota against a
+  # directory. Set it above the dataset size so it reads sensibly in kubectl.
+  capacity:
+    storage: 600Gi
+
+  # The services only read. The agent is the sole writer and it writes through
+  # its own hostPath mount, not through this volume. ReadWriteOnce is the
+  # fallback if binding misbehaves, but it pins the claim to a single node, which
+  # defeats holding a copy on each.
+  accessModes:
+    - ReadOnlyMany
+
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: geodata-local-sc
+  volumeMode: Filesystem
+
+  local:
+    # The volume points at the PARENT of the generation directories, not at a
+    # specific generation. The service references the versioned path underneath
+    # it, so a new generation needs a republish rather than a new volume.
+    #
+    # It also produces the failure you want: on a node missing the required
+    # generation the mount still succeeds and the path is absent, so the service
+    # fails deterministically rather than the pod sticking in ContainerCreating
+    # on an unmountable volume.
+    path: /mnt/geodata/active
+
+  # Scoped to the POOL, not to one node.
+  #
+  # Local volumes are usually pinned to a single host via kubernetes.io/hostname.
+  # Matching the pool label instead is valid and fits here, because every node in
+  # the pool holds an identical, independently synced copy, so any of them can
+  # serve a pod. The scheduler enforces this affinity for every pod using the
+  # claim, so pods land only on nodes that have the data.
+  #
+  # This stays correct only while every matching node holds the same generation,
+  # which is what the dataset-generation label the agent writes is for. Check it
+  # across the pool before publishing:
+  #
+  #   kubectl get nodes -l __LABEL_DOMAIN__/workload=geodata \
+  #     -o custom-columns='NAME:.metadata.name,GEN:.metadata.labels.__LABEL_DOMAIN__/dataset-generation'
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: __LABEL_DOMAIN__/workload
+              operator: In
+              values:
+                - geodata
+
+# The claim is deliberately not included here. Enterprise Manager creates the
+# claim itself during registration, so a claim created here would be a second
+# claimant and could bind this volume first, leaving registration unable to use
+# it. For the same reason there is no claimRef above, which would block
+# Enterprise Manager's claim outright.

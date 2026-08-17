@@ -1,0 +1,47 @@
+# The agent removes the bootstrap taint from its node once, and writes
+# generation labels after every successful pass. Taints live in node.spec and
+# labels in node.metadata, so a single `patch` verb covers both.
+#
+# SECURITY SCOPE, and this belongs in your architecture review rather than only
+# here. This permission is CLUSTER-WIDE: the agent can patch any node, not only
+# the one it runs on. Kubernetes offers no built-in way to scope node access to
+# the running node, because Roles are namespaced and nodes are cluster-scoped.
+# Narrowing it requires an admission webhook or an intermediary that validates
+# the node name against the caller's identity. A compromised agent pod can taint
+# or label every node in the cluster.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: geodata-sync-agent
+  namespace: geodata-sync
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: geodata-sync-agent
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    # get/list/watch reads current taints and labels; patch writes them.
+    # No update, no delete, no create.
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: geodata-sync-agent
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: geodata-sync-agent
+subjects:
+  - kind: ServiceAccount
+    name: geodata-sync-agent
+    namespace: geodata-sync

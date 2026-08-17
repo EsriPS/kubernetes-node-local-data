@@ -1,0 +1,125 @@
+# Ensures the parent directory exists on EVERY node in the cluster, empty where
+# there is no data. Apply it before registering a hostPath folder data store.
+#
+# WHY THIS IS REQUIRED RATHER THAN A WORKAROUND
+#
+# Registering a hostPath folder data store makes ArcGIS add a hostPath volume for
+# that path to service Deployments organisation-wide, not only to the services
+# that read the data. On a test cluster that was 21 pods, including map, caching,
+# sync, geometry, printing and symbol services. The mount uses
+# hostPath.type: Directory, which does not create the path, so on any node where
+# it is absent the pod fails MountVolume.SetUp and never starts.
+#
+# The consequence is unavoidable given how the feature works: once a hostPath
+# data store is registered, every node that may run any ArcGIS service pod must
+# have that path present. Without this DaemonSet, any of those pods rescheduling
+# onto a node outside the dedicated pool fails to mount and stays down.
+#
+# Registration is an Admin REST API call rather than a UI operation:
+#
+#   POST /admin/data/registerItem
+#     item    {"type":"folder","clientPath":"\\\\localhost\\donotuse",
+#              "path":"/fileShares/geodata-host-path-fs",
+#              "info":{"dataStoreConnectionType":"replicated",
+#                      "path":"/mnt/geodata/active"}}
+#     options {"allowServicesRestart":"true"}
+#
+# info.path is the host path this DaemonSet guarantees exists.
+# allowServicesRestart is mandatory, because the call restarts service pods.
+#
+# WHAT THIS DOES NOT DO
+#
+# It creates the parent only, never a versioned dataset directory. A service
+# references active/<generation>/<dataset>/..., so on a node without the data
+# that path is still absent and the service fails deterministically rather than
+# silently serving nothing. This buys mountability, not data.
+#
+# Note the trade: on nodes covered by this shim the hard FailedMount guard is
+# gone, replaced by a path-not-found at query time. That is the price of a
+# hostPath data store, and it is why the service's own node affinity and the
+# bootstrap gate still matter.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: geodata-path-shim
+  namespace: geodata-sync
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
+spec:
+  selector:
+    matchLabels:
+      app: geodata-path-shim
+  template:
+    metadata:
+      labels:
+        app: geodata-path-shim
+        __LABEL_DOMAIN__/component: node-local-data-stores
+    spec:
+      # Runs on every node, including the dedicated ones where the agent already
+      # creates this path. Covering them too means a replaced or scaled-out node
+      # is never briefly missing it.
+      tolerations:
+        - key: __LABEL_DOMAIN__/dedicated
+          operator: Equal
+          value: geodata
+          effect: NoSchedule
+        - key: __LABEL_DOMAIN__/data-not-ready
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+
+      # This gates ArcGIS pods from starting, so it must not be evicted under
+      # pressure.
+      priorityClassName: system-node-critical
+
+      terminationGracePeriodSeconds: 5
+
+      # The mount does the work: kubelet creates the path for DirectoryOrCreate
+      # before the container starts.
+      initContainers:
+        - name: ensure-path
+          image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          command:
+            - sh
+            - -c
+            - 'mkdir -p /mnt/geodata/active && ls -ld /mnt/geodata/active'
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: geodata-root
+              mountPath: /mnt/geodata
+
+      containers:
+        - name: keep-path
+          image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          # Re-asserts the directory rather than sleeping, for two reasons. If
+          # anything removes the path, service pods there stop being able to
+          # mount, and re-creating it turns an outage into a blip. Without the
+          # volumeMount below this container could not see the path at all, which
+          # makes `kubectl exec ... ls` report a misleading empty result.
+          command:
+            - sh
+            - -c
+            - 'while true; do mkdir -p /mnt/geodata/active; sleep 60; done'
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: geodata-root
+              mountPath: /mnt/geodata
+
+      volumes:
+        - name: geodata-root
+          hostPath:
+            path: /mnt/geodata
+            # DirectoryOrCreate here, NOT on active/ -- kubelet creates the
+            # parent and the init container creates active/ inside it.
+            # Deliberately different from the Directory mount ArcGIS adds, which
+            # is what makes a missing path fail loudly for service pods.
+            type: DirectoryOrCreate

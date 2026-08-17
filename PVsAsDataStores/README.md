@@ -5,6 +5,8 @@ Starting at ArcGIS Enterprise on Kubernetes version 11.4, you can register a fol
 - [nfs-pv.yaml](https://github.com/Esri/arcgis-enterprise-on-kubernetes-resources/blob/main/PVsAsDataStores/nfs-pv.yaml): An NFS share accessed as a PV
 - [windows-pv.yaml](https://github.com/Esri/arcgis-enterprise-on-kubernetes-resources/blob/main/PVsAsDataStores/windows-pv.yaml): A Windows (SMB) share accessed as a PV
 
+For routing and geocoding datasets that are too large to serve from a network share, see [NodeLocalDataStores](https://github.com/Esri/arcgis-enterprise-on-kubernetes-resources/tree/main/NodeLocalDataStores), which covers staging a copy onto each node's local storage before registering it as a local PV.
+
 When registering a PV-based folder data store, you must also provide a volume specification. The volume specification is a collection of properties that are used to create the persistent volume claim (PVC) object. The elements included in the volume specification are used for matching and binding the created PVC to the child PV object. At version 11.5, you can provide the volume specification values in Enterprise Manager when creating the data store. In version 11.4 however, you must provide a JSON file that contains the volume specification. 
 
 ## Volume specification JSON (11.4 only)

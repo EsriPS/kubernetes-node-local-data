@@ -1,0 +1,147 @@
+# The dedicated pool. Nodes here hold a full copy of the dataset, so a
+# replacement costs a full re-sync. Every disruption setting below exists to
+# make Karpenter leave these nodes alone. Read the disruption block before
+# changing anything in it.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: geodata-nodes
+spec:
+  template:
+    metadata:
+      labels:
+        # Service pods select on this, and the local PV in 09- matches its node
+        # affinity against it. Binding the PV to the label rather than to a
+        # hostname is what lets a replacement node satisfy the same affinity.
+        __LABEL_DOMAIN__/workload: geodata
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: geodata-nodes
+
+      # Permanent. Keeps everything except the data-reading services off these
+      # nodes; those services carry the matching toleration, set in Enterprise
+      # Manager after publishing.
+      taints:
+        - key: __LABEL_DOMAIN__/dedicated
+          value: geodata
+          effect: NoSchedule
+
+      # The bootstrap gate. startupTaints, not an ordinary taint: Karpenter
+      # re-applies ordinary taints on every reconcile, so the agent would remove
+      # this one and Karpenter would put it straight back. startupTaints are
+      # applied once at registration and then left alone, and Karpenter excludes
+      # them from its scheduling simulation, so it still understands that a node
+      # being built will eventually accept the pending pod.
+      #
+      # THE AGENT RE-APPLIES THIS KEY, which is the corollary. Nothing re-closes
+      # the gate later, and instance-store data is lost on a stop or a hardware
+      # replacement rather than only on termination. A node returning with an
+      # empty disk would stay schedulable and accept service pods with nothing to
+      # read, so the agent re-taints whenever its active directory is empty after
+      # a clean pass.
+      startupTaints:
+        - key: __LABEL_DOMAIN__/data-not-ready
+          value: "true"
+          effect: NoSchedule
+
+      requirements:
+        # A FLOOR, NOT A PINNED INSTANCE TYPE. Four properties the workload
+        # actually depends on; Karpenter picks the cheapest type clearing all of
+        # them.
+
+        # Without this the floor alone admits GPU and FPGA types that happen to
+        # carry large instance stores. Storage-optimised `i` is included on
+        # purpose: it is the cheapest way to satisfy the NVMe line below.
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r", "i"]
+
+        # The ArcGIS Enterprise on Kubernetes node minimum.
+        - key: karpenter.k8s.aws/instance-cpu
+          operator: Gte
+          values: ["8"]
+
+        # MEBIBYTES, not GB. 32 GiB is 32768; writing 32 or 32000 matches every
+        # instance type in the catalogue and removes the memory floor.
+        - key: karpenter.k8s.aws/instance-memory
+          operator: Gte
+          values: ["32768"]
+
+        # THE LINE THAT KEEPS THE DATASET OFF EBS. Size it for two dataset
+        # generations, since the agent stages a new copy beside the active one
+        # before renaming it into place, plus headroom for ArcGIS. This label
+        # exists only on instance types with local NVMe instance store.
+        - key: karpenter.k8s.aws/instance-local-nvme
+          operator: Gte
+          values: ["1400"]
+
+        # No spot. A spot reclaim gives two minutes; rebuilding one of these
+        # nodes takes considerably longer than that.
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+
+        # PIN TO THE ZONE YOUR SOURCE FILESYSTEM LIVES IN. A single-AZ filesystem
+        # read from another zone crosses an availability zone for every byte of
+        # every sync, which adds transfer charges and latency. Pinning also makes
+        # the bootstrap deterministic, so a throughput measurement taken later is
+        # not silently skewed by where a replacement landed.
+        #
+        # The cost is AZ redundancy. If your filesystem is multi-AZ, list both
+        # zones instead.
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["__ZONE__"]
+
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+
+      # Never expire. At the 720h default these nodes are force-drained monthly,
+      # each replacement costing a full re-sync during which the services have no
+      # data. Expiration is forceful, so neither the budget below nor a PDB would
+      # prevent it.
+      expireAfter: Never
+
+      # terminationGracePeriod IS DELIBERATELY UNSET. Karpenter caps a pod's
+      # grace period at the node's, so any value below the agent's would truncate
+      # an in-flight copy. Setting it at all also lets drift disrupt a node even
+      # when blocking PDBs are present, which is the opposite of what this pool
+      # wants. The cost is that an undrainable pod can block termination until a
+      # human intervenes.
+
+  # Bounds the number of node-local copies, which is the expensive axis here.
+  # cpu is a second ceiling for Karpenter versions that do not enforce nodes.
+  limits:
+    nodes: "3"
+    cpu: 144
+
+  # Disruption: effectively off. Three brakes, because each stops a different
+  # thing and none is sufficient alone.
+  disruption:
+    # Never consolidate a node that still has pods on it.
+    consolidationPolicy: WhenEmpty
+
+    # And never consolidate the empty ones either. Without this, the warm-capacity
+    # pods in 04- look like waste to a consolidation pass: the node is removed,
+    # the placeholder goes Pending, a new node launches, and the bootstrap runs
+    # again on a loop.
+    consolidateAfter: Never
+
+    # Zero voluntary disruptions of any kind, including drift. This is the one
+    # the other two do not catch: editing the AMI pin or the requirements above
+    # marks every node Drifted and would otherwise queue them all for
+    # replacement. The ArcGIS guidance to disable automated node image rotation
+    # points the same way; see ../../Guides/Karpenter/README.md.
+    #
+    # Consequence, and it is intended: nodes here are never replaced
+    # automatically, so an AMI or configuration change does not roll out on its
+    # own. Nodes report Drifted and stay put until someone deletes a NodeClaim.
+    budgets:
+      - nodes: "0"

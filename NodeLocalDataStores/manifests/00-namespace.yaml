@@ -1,0 +1,9 @@
+# The sync agent runs in its own namespace, not in the ArcGIS namespace.
+# PersistentVolumeClaims are namespaced, and the claim ArcGIS holds on the NFS
+# export is operator-managed, so the agent needs a second claim of its own.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: geodata-sync
+  labels:
+    __LABEL_DOMAIN__/component: node-local-data-stores
