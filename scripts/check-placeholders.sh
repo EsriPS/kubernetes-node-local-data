@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # Fails if any __PLACEHOLDER__ token is still unreplaced. Run from the
-# NodeLocalDataStores directory before applying anything.
+# repository root before applying anything.
 
 set -euo pipefail
 

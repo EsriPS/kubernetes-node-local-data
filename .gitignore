@@ -1,0 +1,7 @@
+.DS_Store
+
+# Python, for the sync agent under agent/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]

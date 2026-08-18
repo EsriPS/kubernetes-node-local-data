@@ -404,3 +404,10 @@ a trust boundary to review.
 - Karpenter: <https://karpenter.sh>
 - Bottlerocket ephemeral storage:
   <https://bottlerocket.dev/en/os/latest/api/settings/bootstrap-containers/>
+
+## Licensing
+
+Copyright 2026 Esri
+
+Licensed under the Apache License, Version 2.0. A copy is in
+[license.txt](license.txt).
