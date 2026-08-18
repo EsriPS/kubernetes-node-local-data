@@ -33,10 +33,15 @@ between them. That holds only for nodes reading identical data.
 
 ## What set the ceiling, in order of discovery
 
-**Not the network.** The instance offers 22.5 Gbps and the sync used about a
-fifth of it. A single TCP connection is capped near 5 Gbps by an AWS per-flow
-limit, so the constraint was flow count rather than bandwidth. `nconnect=16`
-lifted five parallel readers from about 600 MB/s to about 1,400 MB/s.
+**Not the network, though with less room to spare than the other two.** The
+instance sustains 22.5 Gbps, and the best result of about 1,900 MB/s is 15.2
+Gbps of that, so roughly two thirds used with about a third still in reserve.
+Bandwidth was the wrong place to look because of flow count rather than
+headroom: a single TCP connection is capped near 5 Gbps, about 625 MB/s, by an
+AWS per-flow limit, so no individual reader could get near the link on its own.
+`nconnect=16` lifted five parallel readers from about 600 MB/s to about 1,400
+MB/s. What settles it is the IOPS table below, where throughput tracked
+provisioned IOPS while link headroom remained.
 
 **Not the destination disk.** Local NVMe changed the sync time by less than
 10%. It matters for the read path the services use, which is the reason to

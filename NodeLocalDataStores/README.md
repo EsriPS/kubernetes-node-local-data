@@ -104,9 +104,9 @@ them before applying anything.
 | `__NFS_SHARE_PATH__` | Export path, for example `/data` |
 | `__AMI_ALIAS__` | Pinned Bottlerocket version, for example `bottlerocket@v1.64.0` |
 | `__NODE_IAM_ROLE__` | Instance profile role for Karpenter-launched nodes |
-| `__SUBNET_ID_1__`, `__SUBNET_ID_2__` | Subnets Karpenter may launch into |
+| `__SUBNET_TAG_KEY__`, `__SUBNET_TAG_VALUE__` | Tag identifying the subnets Karpenter may launch into, for example `karpenter.sh/discovery` and your cluster name. Selects any number of subnets, so one subnet or several needs no structural change. `02-ec2nodeclass.yaml` carries a commented ID-based alternative |
 | `__SECURITY_GROUP_ID__` | Security group with access to the NFS export |
-| `__ZONE__` | Availability zone of the source filesystem |
+| `__ZONE__` | Availability zone to launch into. One zone is the default. Adding zones is a deliberate cost-for-redundancy trade, and a multi-AZ source does not make it free; read the reasoning in `03-nodepool.yaml` first |
 
 Check that none remain:
 
@@ -289,19 +289,60 @@ Repeat this for GPServer and GPServerSync types that use the ArcObjects11 provid
 
 Confirm the dataset is on the instance store rather than on EBS. Check from a
 pod that mounts the path; `kubectl debug node/...` has its own mount namespace
-and will report the wrong filesystem:
+and will report the wrong filesystem.
+
+THE POD MUST BE ONE RUNNING ON A NODE IN THE POOL, which is why this does not
+address `ds/geodata-path-shim`. `kubectl exec ds/<name>` picks an arbitrary pod
+from the set, and the shim runs on every node in the cluster on purpose, so it
+usually lands on a node that holds no data and reports that node's EBS volume.
+That is the same wrong answer as `kubectl debug node/...`, arrived at a
+different way. Use the sync agent instead, which only ever schedules onto nodes
+carrying the pool label:
 
 ```bash
-kubectl exec -n geodata-sync ds/geodata-path-shim -c keep-path -- df -h /mnt/geodata
+kubectl exec -n geodata-sync ds/geodata-sync-agent -- df -hT /mnt/data
+```
+
+The agent mounts the same host path at `/mnt/data` rather than at
+`/mnt/geodata`; see the volumeMounts in `07-sync-agent-daemonset.yaml`. Expect
+an instance-store device, and an `md` array where the instance type carries more
+than one NVMe disk:
+
+```
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/md127     xfs   2.6T  556G  2.1T  21% /mnt/data
+```
+
+A size matching the EBS data volume in `02-ec2nodeclass.yaml`, 300G, means the
+bind did not happen and the dataset went to the wrong device.
+
+Separately, confirm the shim did its job on a node OUTSIDE the pool, since that
+is what makes a hostPath data store mountable organisation-wide. The path should
+exist, be empty, and sit on that node's EBS volume:
+
+```bash
+NODE=$(kubectl get nodes -l '__LABEL_DOMAIN__/workload!=geodata' \
+  -o jsonpath='{.items[0].metadata.name}')
+POD=$(kubectl get pods -n geodata-sync -l app=geodata-path-shim \
+  --field-selector spec.nodeName=$NODE -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n geodata-sync "$POD" -c keep-path -- df -hT /mnt/geodata
 ```
 
 Confirm every node in the pool holds the same generation before publishing a
-service against it:
+service against it.
+
+ESCAPE THE DOTS in the label key on the `custom-columns` side. That argument is
+JSONPath, where an unescaped dot is a field separator, so a domain-qualified key
+substituted in as-is silently resolves to nothing and every row reads `<none>`.
+The `-l` selector needs no escaping, only the JSONPath does:
 
 ```bash
 kubectl get nodes -l __LABEL_DOMAIN__/workload=geodata \
   -o custom-columns='NAME:.metadata.name,GEN:.metadata.labels.__LABEL_DOMAIN__/dataset-generation'
 ```
+
+So with a label domain of `geodata.example.com`, the second line reads
+`.metadata.labels.geodata\.example\.com/dataset-generation`.
 
 Confirm that routing and geocoding pods can be scheduled on the nodes. 
 Only the permanent taint should remain:
@@ -337,9 +378,10 @@ sample does not automate that.
 and added rather than modified. A new release is a new directory and a republish
 of the dependent service.
 
-**Multi-zone pools.** The example pins the pool to the zone holding the source
-filesystem. If your filesystem is multi-AZ, list both zones and re-read the
-reasoning in `manifests/03-nodepool.yaml`.
+**A tested multi-zone pool.** Adding zones is documented in
+`manifests/03-nodepool.yaml`, including why a multi-AZ source filesystem does not
+make a second zone free. Single-zone is the arrangement that was measured; a
+multi-zone pool has not been run end to end here.
 
 **Scoping the agent's node permissions.** The agent holds a cluster-wide
 permission to patch nodes, because Kubernetes offers no way to scope node access

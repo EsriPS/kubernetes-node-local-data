@@ -21,17 +21,29 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Exclude this script and the README, which document the tokens rather than use
-# them.
-if hits=$(grep -rn '__[A-Z0-9_]\+__' "$root" \
-            --exclude-dir=scripts \
-            --exclude-dir=.venv \
-            --exclude-dir=__pycache__ \
-            --exclude=README.md \
-            --exclude=RESULTS.md 2>/dev/null); then
+# ONLY manifests/ IS SCANNED, deliberately. Everything that gets applied to a
+# cluster lives there, so it is the only place a leftover token can actually
+# break something.
+#
+# Scanning the whole tree instead, with a list of files to exclude, is what this
+# script used to do and it failed even on a correct substitution. Prose outside
+# manifests/ names these tokens on purpose: README.md and RESULTS.md document
+# them, and agent/Dockerfile and agent/sync_agent.py each carry a comment
+# pointing at __IMAGE_REPOSITORY__ and __LABEL_DOMAIN__ to say where they are
+# set. Those are references to the tokens, not uses of them, so matching them
+# was a false positive. Keeping the scan scoped to what is applied means the
+# exclude list cannot drift out of date as documentation is added.
+manifests="$root/manifests"
+
+if [[ ! -d "$manifests" ]]; then
+  echo "No manifests directory found at $manifests" >&2
+  exit 1
+fi
+
+if hits=$(grep -rn '__[A-Z0-9_]\+__' "$manifests" 2>/dev/null); then
   echo "Unreplaced placeholders found:"
   echo "$hits"
   exit 1
 fi
 
-echo "No unreplaced placeholders."
+echo "No unreplaced placeholders in manifests/."

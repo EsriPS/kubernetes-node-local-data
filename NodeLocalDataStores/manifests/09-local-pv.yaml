@@ -106,10 +106,15 @@ spec:
   #
   # This stays correct only while every matching node holds the same generation,
   # which is what the dataset-generation label the agent writes is for. Check it
-  # across the pool before publishing:
+  # across the pool before publishing. Escape the dots in the label key on the
+  # custom-columns side, which is JSONPath and treats an unescaped dot as a field
+  # separator; without that every row reads <none>. The -l selector is fine as-is.
   #
   #   kubectl get nodes -l __LABEL_DOMAIN__/workload=geodata \
   #     -o custom-columns='NAME:.metadata.name,GEN:.metadata.labels.__LABEL_DOMAIN__/dataset-generation'
+  #
+  # With a domain of geodata.example.com that second line reads
+  # .metadata.labels.geodata\.example\.com/dataset-generation
   nodeAffinity:
     required:
       nodeSelectorTerms:

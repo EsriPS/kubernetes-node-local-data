@@ -20,11 +20,30 @@ spec:
   amiSelectorTerms:
     - alias: __AMI_ALIAS__
 
+  # Tag-based, so this works unchanged whether your cluster runs in one subnet or
+  # a dozen. Selecting by tag rather than by a fixed list of IDs is the idiomatic
+  # Karpenter pattern, and most clusters already carry a discovery tag applied at
+  # provisioning time, commonly karpenter.sh/discovery: <cluster-name>.
+  #
+  # THIS INTERSECTS WITH THE ZONE LIST in 03-nodepool.yaml, and Karpenter needs
+  # both to agree. A subnet matched here whose zone is not listed there is never
+  # used, and a zone listed there with no matching subnet here means nothing can
+  # launch at all. If your tag matches subnets across more zones than you intend
+  # the pool to use, the zone requirement is what narrows it, not this.
   subnetSelectorTerms:
-    - id: __SUBNET_ID_1__
-    - id: __SUBNET_ID_2__
+    - tags:
+        __SUBNET_TAG_KEY__: __SUBNET_TAG_VALUE__
 
-  # Must reach the NFS export the agent reads from.
+  # Naming subnets explicitly is the alternative where a tag would select more
+  # than you want and you would rather be literal. Repeat the entry per subnet;
+  # a single entry is valid.
+  #
+  # subnetSelectorTerms:
+  #   - id: subnet-0123456789abcdef0
+  #   - id: subnet-0123456789abcdef1
+
+  # Must reach the NFS export the agent reads from. Repeat the entry if the path
+  # to your export needs more than one group.
   securityGroupSelectorTerms:
     - id: __SECURITY_GROUP_ID__
 

@@ -77,20 +77,58 @@ spec:
           operator: Gte
           values: ["1400"]
 
+        # THE LINE THAT MAKES SYNC TIME REPRODUCIBLE, and it is a floor on
+        # SUSTAINED bandwidth rather than burst. This label carries the instance's
+        # BASELINE bandwidth in Mbps. Types advertised as "up to N Gigabit" have a
+        # baseline far below N and fall back to it once burst credits are spent,
+        # which happens well inside a full sync: i4i.2xlarge peaks at 12 Gbps but
+        # baselines at 4.687, and i3.2xlarge peaks at 10 and baselines at 2.5.
+        # Selecting on the advertised peak is how you get a node that benchmarks
+        # acceptably for thirty seconds and then takes twenty minutes.
+        #
+        # 16000 Mbps IS 2,000 MB/s, and that is not a round number by accident:
+        # it is the ceiling of the filesystem this was measured against, an FSx
+        # for ONTAP volume at 16,000 provisioned IOPS. Matching the two puts the
+        # constraint on the filesystem rather than on the instance. Above this
+        # line extra bandwidth buys nothing, because the source cannot fill it;
+        # below it the node becomes the limit instead.
+        #
+        # RE-DERIVE IT IF YOUR PROVISIONED IOPS DIFFERS, since the two are meant
+        # to correspond. The IOPS-to-throughput table in ../RESULTS.md is the
+        # model: at roughly 120 KB per operation on a cold read, 10,000 IOPS
+        # reached about 1,200 MB/s and 16,000 reached about 2,000 MB/s. Convert
+        # your own ceiling to Mbps and use that.
+        - key: karpenter.k8s.aws/instance-network-bandwidth
+          operator: Gt
+          values: ["16000"]
+
         # No spot. A spot reclaim gives two minutes; rebuilding one of these
         # nodes takes considerably longer than that.
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["on-demand"]
 
-        # PIN TO THE ZONE YOUR SOURCE FILESYSTEM LIVES IN. A single-AZ filesystem
-        # read from another zone crosses an availability zone for every byte of
-        # every sync, which adds transfer charges and latency. Pinning also makes
-        # the bootstrap deterministic, so a throughput measurement taken later is
-        # not silently skewed by where a replacement landed.
+        # EVERY ZONE THE POOL MAY LAUNCH INTO. One entry is the default and the
+        # cheapest arrangement; add entries to trade transfer cost for redundancy.
+        # Reading a filesystem from another zone crosses an availability zone for
+        # every byte of every sync, which adds transfer charges and latency. A
+        # single zone also keeps a throughput measurement meaningful, because a
+        # replacement node cannot quietly land somewhere with a different path to
+        # the source.
         #
-        # The cost is AZ redundancy. If your filesystem is multi-AZ, list both
-        # zones instead.
+        # A MULTI-AZ SOURCE DOES NOT MAKE A SECOND ZONE FREE, which is the part
+        # worth getting right before you add one. FSx for NetApp ONTAP Multi-AZ
+        # serves NFS from a floating IP that is active in ONE subnet at a time,
+        # the preferred one, moving to the standby only on failover. Listing both
+        # zones therefore does not split the traffic: nodes that land in the zone
+        # without the active endpoint cross an AZ boundary for their entire sync,
+        # and nodes in the active zone do not. What a second zone buys is that one
+        # zone becoming unavailable does not take the whole pool with it. Whether
+        # that is worth paying cross-AZ transfer on part of the pool is a
+        # judgement about your availability target, not a default.
+        #
+        # For a single-AZ source, list the zone holding it and nothing else.
+        # Reading it from anywhere else is cost with no benefit at all.
         - key: topology.kubernetes.io/zone
           operator: In
           values: ["__ZONE__"]
