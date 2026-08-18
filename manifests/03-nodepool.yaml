@@ -176,7 +176,7 @@ spec:
     # the other two do not catch: editing the AMI pin or the requirements above
     # marks every node Drifted and would otherwise queue them all for
     # replacement. The ArcGIS guidance to disable automated node image rotation
-    # points the same way; see ../../Guides/Karpenter/README.md.
+    # points the same way.
     #
     # Consequence, and it is intended: nodes here are never replaced
     # automatically, so an AMI or configuration change does not roll out on its

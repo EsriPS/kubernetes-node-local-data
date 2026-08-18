@@ -14,8 +14,7 @@
 #                    registered only through the Admin REST API
 #
 # Both read the same node-local tree the agent produces, /mnt/geodata/active.
-# Two data stores are registered, not one. For the general PV-based folder data
-# store reference, see ../../PVsAsDataStores/README.md.
+# Two data stores are registered, not one.
 #
 # The two differ sharply in blast radius. Registering the local PV is scoped and
 # touches no running pods. Registering the hostPath store is not scoped: ArcGIS

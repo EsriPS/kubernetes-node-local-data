@@ -47,8 +47,7 @@ to re-place the pods. Test this once on your version before planning around it.
 
 **Automated node image rotation must be disabled for nodes holding staged
 data.** Drift replacement discards the local copy and re-runs the sync on a
-schedule set by the OS release cadence. The same guidance applies to ArcGIS
-workloads generally; see [../../Guides/Karpenter/README.md](../../Guides/Karpenter/README.md).
+schedule set by the OS release cadence.
 
 **A NodePool has no minimum size.** Karpenter launches nodes only for pending
 pods, and DaemonSets do not count because they schedule onto nodes that already

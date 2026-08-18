@@ -175,9 +175,7 @@ network datasets:
 
 **Geocoding** uses a local PersistentVolume, registered through ArcGIS Enterprise
 Manager. Form values are listed at the top of `manifests/09-local-pv.yaml` 
-and must agree with the volume spec. For the general reference on PV-based 
-folder data stores, see
-[../PVsAsDataStores/README.md](../PVsAsDataStores/README.md).
+and must agree with the volume spec.
 
 **Routing** for ArcGIS Enterprise on Kubernetes 12.0 12.1 uses a hostPath
 folder data store, which Enterprise Manager cannot create. Register it
@@ -404,6 +402,5 @@ a trust boundary to review.
 - ArcGIS Enterprise on Kubernetes folder data stores:
   <https://enterprise-k8s.arcgis.com/en/latest/administer/system-managed-data-stores.htm>
 - Karpenter: <https://karpenter.sh>
-- Karpenter for ArcGIS Enterprise: [../Guides/Karpenter/README.md](../Guides/Karpenter/README.md)
 - Bottlerocket ephemeral storage:
   <https://bottlerocket.dev/en/os/latest/api/settings/bootstrap-containers/>
