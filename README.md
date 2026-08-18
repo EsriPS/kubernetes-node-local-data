@@ -19,11 +19,14 @@ Sample code and manifests are provided as-is and unsupported.
 - [Configuration](#configuration)
 - [Apply order](#apply-order)
 - [Registering the data stores](#registering-the-data-stores)
+- [Rescheduling the publishing tool pods](#rescheduling-the-publishing-tool-pods)
+- [Setting the default placement properties for Map and GP services](#setting-the-default-placement-properties-for-map-and-gp-services)
 - [Verifying](#verifying)
 - [Replacing a node](#replacing-a-node)
 - [Not covered](#not-covered)
 - [Tuning notes](#tuning-notes)
 - [Official documentation](#official-documentation)
+- [Licensing](#licensing)
 
 ## What this is for
 
@@ -199,6 +202,7 @@ and tolerations to the service in ArcGIS Enterprise Manager. Doing so will autom
 reschedule any PublishingTools pods on the routing and geocoding nodes.
 
 ## Setting the default placement properties for Map and GP services
+
 ArcGIS Enterprise on Kubernetes does not currently support specifying node placement properties
 for a service when publishing the service. They can only be set after a service has been published.
 Consequently, pods hosting geocoding and routing services that rely on node-local data will be 
@@ -280,8 +284,6 @@ to be replace with your specific configuration value, e.g., `geodata.example.com
 ```
 
 Repeat this for GPServer and GPServerSync types that use the ArcObjects11 provider as well. 
-
-## Publishing routing and geocoding services
 
 ## Verifying
 
