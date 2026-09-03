@@ -1,0 +1,420 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    data.example.com/component: node-local-data-stores
+  name: geodata-sync-agent
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    data.example.com/component: node-local-data-stores
+  name: geodata-sync-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: geodata-sync-agent
+subjects:
+- kind: ServiceAccount
+  name: geodata-sync-agent
+  namespace: geodata-sync
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    data.example.com/component: node-local-data-stores
+  name: geodata-path-shim
+  namespace: geodata-sync
+spec:
+  selector:
+    matchLabels:
+      app: geodata-path-shim
+  template:
+    metadata:
+      labels:
+        app: geodata-path-shim
+        data.example.com/component: node-local-data-stores
+    spec:
+      containers:
+      - command:
+        - sh
+        - -c
+        - while true; do mkdir -p "$DATASET_ROOT"; sleep 60; done
+        env:
+        - name: DATASET_ROOT
+          value: /mnt/geodata
+        image: public.ecr.aws/amazonlinux/amazonlinux:2023
+        name: keep-path
+        resources:
+          limits:
+            memory: 64Mi
+          requests:
+            cpu: 5m
+            memory: 16Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /mnt/geodata
+          name: dataset-root
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - mkdir -p "$DATASET_ROOT" && ls -ld "$DATASET_ROOT"
+        env:
+        - name: DATASET_ROOT
+          value: /mnt/geodata
+        image: public.ecr.aws/amazonlinux/amazonlinux:2023
+        name: ensure-path
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /mnt/geodata
+          name: dataset-root
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 5
+      tolerations:
+      - effect: NoSchedule
+        key: data.example.com/dedicated
+        operator: Equal
+        value: geodata
+      - effect: NoSchedule
+        key: data.example.com/data-not-ready
+        operator: Equal
+        value: 'true'
+      volumes:
+      - hostPath:
+          path: /mnt/geodata
+          type: DirectoryOrCreate
+        name: dataset-root
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    data.example.com/component: node-local-data-stores
+  name: geodata-sync-agent
+  namespace: geodata-sync
+spec:
+  selector:
+    matchLabels:
+      app: geodata-sync-agent
+  template:
+    metadata:
+      labels:
+        app: geodata-sync-agent
+        data.example.com/component: node-local-data-stores
+    spec:
+      containers:
+      - args:
+        - --source=/mnt/source
+        - --dest-root=/mnt/geodata
+        - --interval=300
+        - --transfers=8
+        - --multi-thread-streams=8
+        - --exclude=*.zip.*
+        - --exclude=*.zip
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: LABEL_DOMAIN
+          value: data.example.com
+        image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/geodata-sync-agent:0.5.0
+        imagePullPolicy: IfNotPresent
+        name: sync-agent
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 10m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /mnt/source
+          name: source
+          readOnly: true
+        - mountPath: /mnt/geodata
+          name: node-local-data
+      nodeSelector:
+        data.example.com/workload: geodata
+      priorityClassName: system-node-critical
+      serviceAccountName: geodata-sync-agent
+      terminationGracePeriodSeconds: 4800
+      tolerations:
+      - effect: NoSchedule
+        key: data.example.com/data-not-ready
+        value: 'true'
+      - effect: NoSchedule
+        key: data.example.com/dedicated
+        value: geodata
+      volumes:
+      - name: source
+        persistentVolumeClaim:
+          claimName: geodata-source-pvc
+          readOnly: true
+      - hostPath:
+          path: /mnt/geodata
+          type: DirectoryOrCreate
+        name: node-local-data
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: geodata-warm-capacity
+    data.example.com/component: node-local-data-stores
+  name: geodata-warm-capacity
+  namespace: geodata-sync
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: geodata-warm-capacity
+  template:
+    metadata:
+      labels:
+        app: geodata-warm-capacity
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: geodata-warm-capacity
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - image: registry.k8s.io/pause:3.10
+        name: pause
+        resources:
+          limits:
+            memory: 16Mi
+          requests:
+            cpu: 10m
+            memory: 16Mi
+      nodeSelector:
+        data.example.com/workload: geodata
+      priorityClassName: geodata-warm-capacity
+      terminationGracePeriodSeconds: 0
+      tolerations:
+      - effect: NoSchedule
+        key: data.example.com/data-not-ready
+        value: 'true'
+      - effect: NoSchedule
+        key: data.example.com/dedicated
+        value: geodata
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: geodata-nodes
+spec:
+  amiSelectorTerms:
+  - alias: bottlerocket@v1.32.0
+  blockDeviceMappings:
+  - deviceName: /dev/xvda
+    ebs:
+      deleteOnTermination: true
+      encrypted: true
+      volumeSize: 4Gi
+      volumeType: gp3
+  - deviceName: /dev/xvdb
+    ebs:
+      deleteOnTermination: true
+      encrypted: true
+      volumeSize: 200Gi
+      volumeType: gp3
+  role: KarpenterNodeRole-geodata
+  securityGroupSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: geodata-cluster
+  subnetSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: geodata-cluster
+  tags:
+    data.example.com/component: node-local-data-stores
+  userData: '[settings.bootstrap-commands.geodata-nvme]
+
+    commands = [["apiclient", "ephemeral-storage", "init"], ["apiclient", "ephemeral-storage",
+    "bind", "--dirs", "/mnt/geodata"]]
+
+    mode = "always"
+
+    essential = true
+
+    '
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    data.example.com/component: node-local-data-stores
+  name: geodata-sync
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: geodata-nodes
+spec:
+  disruption:
+    budgets:
+    - nodes: '0'
+    consolidateAfter: Never
+    consolidationPolicy: WhenEmpty
+  limits:
+    cpu: 144
+    nodes: '3'
+  template:
+    metadata:
+      labels:
+        data.example.com/workload: geodata
+    spec:
+      expireAfter: Never
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: geodata-nodes
+      requirements:
+      - key: kubernetes.io/arch
+        operator: In
+        values:
+        - amd64
+      - key: kubernetes.io/os
+        operator: In
+        values:
+        - linux
+      - key: topology.kubernetes.io/zone
+        operator: In
+        values:
+        - us-east-1a
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values:
+        - on-demand
+      - key: karpenter.k8s.aws/instance-category
+        operator: In
+        values:
+        - c
+        - m
+        - r
+        - i
+      - key: karpenter.k8s.aws/instance-generation
+        operator: Gt
+        values:
+        - '7'
+      - key: karpenter.k8s.aws/instance-cpu
+        operator: Gt
+        values:
+        - '7'
+      - key: karpenter.k8s.aws/instance-memory
+        operator: Gt
+        values:
+        - '32767'
+      - key: karpenter.k8s.aws/instance-local-nvme
+        operator: Gt
+        values:
+        - '1199'
+      - key: karpenter.k8s.aws/instance-network-bandwidth
+        operator: Gt
+        values:
+        - '16000'
+      startupTaints:
+      - effect: NoSchedule
+        key: data.example.com/data-not-ready
+        value: 'true'
+      taints:
+      - effect: NoSchedule
+        key: data.example.com/dedicated
+        value: geodata
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  labels:
+    data.example.com/component: node-local-data-stores
+  name: geodata-source-pv
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 1536Gi
+  claimRef:
+    name: geodata-source-pvc
+    namespace: geodata-sync
+  csi:
+    driver: nfs.csi.k8s.io
+    readOnly: true
+    volumeAttributes:
+      server: 10.0.0.10
+      share: /geodata
+    volumeHandle: 10.0.0.10#geodata#geodata-source-pv
+  mountOptions:
+  - nfsvers=4.1
+  - nconnect=16
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: geodata-source-sc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    data.example.com/component: node-local-data-stores
+  name: geodata-source-pvc
+  namespace: geodata-sync
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 1536Gi
+  storageClassName: geodata-source-sc
+  volumeName: geodata-source-pv
+---
+apiVersion: scheduling.k8s.io/v1
+description: Holds dedicated nodes open so node-local data is staged before workload
+  arrives. Lowest priority in the cluster.
+globalDefault: false
+kind: PriorityClass
+metadata:
+  name: geodata-warm-capacity
+preemptionPolicy: Never
+value: -10
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    data.example.com/component: node-local-data-stores
+  name: geodata-sync-agent
+  namespace: geodata-sync
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  labels:
+    data.example.com/component: node-local-data-stores
+  name: geodata-source-sc
+provisioner: kubernetes.io/no-provisioner
+reclaimPolicy: Retain
+volumeBindingMode: Immediate

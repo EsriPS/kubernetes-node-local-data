@@ -19,60 +19,38 @@ geocoding nodes.
 
 Sample code, provided as-is and unsupported.
 
-The agent runs as a DaemonSet on a dedicated node pool. On each pass it copies
-any dataset the node does not yet hold from a shared NFS export onto that node's
-local storage, and does three things a plain copy loop does not:
+The agent runs as a DaemonSet on a dedicated node pool. On every pass it runs
+one recursive ``rclone sync`` from the authoritative ONTAP source directly into
+``datasetRoot`` (the ``--dest-root`` argument). Source additions and changes are
+copied, and destination paths absent from the source are deleted, subject to
+configured excludes.
 
-  1. Datasets are copied into a staging directory and moved into place with an
-     atomic rename, so a partially transferred dataset is never visible under
-     the path a service pod reads.
-  2. The bootstrap taint is removed from the node after the first successful
-     pass, releasing routing and geocoding pods to schedule there.
-  3. A generation label is written to the node after every successful pass, so
-     publish-time checks and monitoring can see which nodes hold which data.
+rclone compares files by size and modification time by default. It transfers a
+changed file to a temporary path and renames the completed file into place;
+``--inplace`` is deliberately not used. This gives per-file replacement rather
+than whole-tree atomicity: consumers can observe a mixture of old and new files
+while a pass is running, and files completed before an interrupted pass remain
+visible. A later successful pass reconciles the direct mirror. The agent does
+not maintain a second full staging tree.
 
-One dataset is copied with several concurrent transfers rather than one. A
-single-threaded copier issues one read at a time and tops out well below what
-the export can deliver, no matter how the storage is tuned, so concurrency in
-the agent is the only remaining lever. See sync_dataset.
+After a successful pass, the bootstrap taint is removed and node labels record
+a digest and count of the top-level dataset directory names in ``datasetRoot``.
+The generation label identifies those names, not their file contents. If the
+dataset root is absent or empty, the bootstrap taint is applied again. If it
+exists but cannot be read, the inventory is unknown rather than empty, and the
+taint and labels are left exactly as they are.
 
-Directory layout under --dest-root:
+The transfer uses concurrent files and concurrent ranged reads within large
+files. A single-threaded copier cannot use the measured ONTAP and local-storage
+throughput for this dataset shape; see ../tuning/rclone.md before changing the
+concurrency flags.
 
-    staging/<dataset>/    transient, never mounted by service pods
-    active/<dataset>/     mounted read-only by routing and geocoding pods
-
-Source model:
-
-    Each immediate subdirectory of --source is one immutable dataset. Datasets
-    are added, never modified in place. New data means a new directory and a
-    republish of the dependent service. The agent therefore syncs only
-    datasets that are absent from active/ and leaves existing ones untouched,
-    which is what keeps it from writing into a directory a running pod is
-    reading.
-
-    A dataset directory is typically a few hundred gigabytes of extracted data
-    beside a split zip archive of that same data. The archive is dropped with
-    --exclude; it is a transfer format and no service reads it.
-
-Transfer engine: rclone
------------------------
-The copy is done by `rclone sync`. A whole-file copier such as rsync cannot
-reach the same throughput on this shape of data however it is parallelised,
-because it moves whole files one thread at a time and the largest member of a
-typical dataset is a single file of well over a hundred gigabytes. rclone issues
-concurrent ranged reads within a file, which cuts a several-hundred-gigabyte
-sync from roughly twenty minutes to roughly five on the test cluster. Every flag
-below was chosen from a measurement rather than from taste; see
-../tuning/rclone.md.
-
-Hardlinking against a previous generation is deliberately not implemented.
-rclone has no equivalent of rsync --link-dest, and it would save nothing here:
-the payload is monolithic multi-gigabyte geodatabases that differ every release,
-and a re-export with fresh timestamps defeats hardlinking outright. Size volumes
-for two full generations.
+A dataset directory is typically a few hundred gigabytes of extracted data
+beside split zip archives. Configured ``--exclude`` patterns can omit those
+transfer artifacts because routing services do not read them.
 
 Usage:
-    sync_agent.py --source /mnt/source --dest-root /mnt/data --interval 300
+    sync_agent.py --source /mnt/source --dest-root /mnt/geodata --interval 300
 
 Environment:
     NODE_NAME   name of the node this pod runs on (downward API, required
@@ -89,7 +67,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -107,7 +84,7 @@ log = logging.getLogger("sync-agent")
 _shutdown = threading.Event()
 
 # Label and taint keys are namespaced under a DNS domain you control. This must
-# match the domain used in the manifests, which template it as __LABEL_DOMAIN__.
+# match the chart's `labelDomain` value.
 LABEL_DOMAIN = os.environ.get("LABEL_DOMAIN", "geodata.example.com")
 
 BOOTSTRAP_TAINT = f"{LABEL_DOMAIN}/data-not-ready"
@@ -134,19 +111,84 @@ def handle_signal(signum, frame):  # noqa: ARG001
     log.info("Shutdown signal received, will exit after the current operation.")
 
 
-def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, check=check, text=True, capture_output=True)
+def run(cmd: list[str], check: bool = True, *,
+        stream_stderr: bool = False) -> subprocess.CompletedProcess:
+    """
+    Run `cmd` and return a CompletedProcess.
+
+    ``stream_stderr`` is opt-in and defaults to the buffered
+    ``capture_output=True`` behavior, so every kubectl call is byte-for-byte
+    unchanged. Those callers already log stderr selectively --
+    ``remove_bootstrap_taint`` treats "not found" as a normal info-level outcome
+    -- and unconditional streaming would double-log it as a warning.
+
+    With ``stream_stderr=True`` each stderr line is logged as it arrives *and*
+    accumulated, so a long rclone pass with ``--stats=60s --stats-one-line -v``
+    is observable while it runs while ``result.stderr`` still carries the whole
+    output for ``rclone_transferred_bytes`` to parse. ``check=True`` still
+    raises ``CalledProcessError`` with ``.stderr`` populated.
+    """
+    if not stream_stderr:
+        return subprocess.run(cmd, check=check, text=True, capture_output=True)
+
+    collected: list[str] = []
+    stdout_chunks: list[str] = []
+
+    with subprocess.Popen(
+        cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1,
+    ) as process:
+        # stdout is drained concurrently. rclone writes almost nothing there,
+        # but a full stdout pipe would block the child while this loop waits on
+        # stderr.
+        def _drain_stdout() -> None:
+            if process.stdout is not None:
+                stdout_chunks.append(process.stdout.read())
+
+        stdout_reader = threading.Thread(target=_drain_stdout, daemon=True)
+        stdout_reader.start()
+
+        if process.stderr is not None:
+            for line in process.stderr:
+                collected.append(line)
+                # Progress statistics, not failures: INFO is the right level.
+                log.info("%s", line.rstrip())
+
+        returncode = process.wait()
+        stdout_reader.join()
+
+    stderr = "".join(collected)
+    stdout = "".join(stdout_chunks)
+    if check and returncode != 0:
+        raise subprocess.CalledProcessError(returncode, cmd, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
 
 
 # --------------------------------------------------------------------------
 # Dataset discovery and generation identity
 # --------------------------------------------------------------------------
 
-def list_datasets(directory: Path) -> list[str]:
-    """Immediate subdirectories of `directory`, sorted. One per dataset."""
-    if not directory.is_dir():
-        return []
-    return sorted(p.name for p in directory.iterdir() if p.is_dir() and not p.name.startswith("."))
+def list_datasets(directory: Path) -> list[str] | None:
+    """
+    Immediate subdirectories of `directory`, sorted. One per dataset.
+
+    Returns None if the directory exists but cannot be read. As with
+    ``read_node_labels``, None means "unknown", not "empty" -- an absent or
+    genuinely empty root is ``[]`` and legitimately re-applies the bootstrap
+    taint, while an unreadable root must leave readiness exactly as it is. A
+    denied directory can still be stat'd, so ``is_dir()`` does not catch this
+    and ``iterdir()`` raises ``PermissionError``; letting that propagate exits
+    the process, and treating it as empty would re-taint a node whose mirror is
+    complete.
+    """
+    try:
+        if not directory.is_dir():
+            return []
+        return sorted(p.name for p in directory.iterdir()
+                      if p.is_dir() and not p.name.startswith("."))
+    except PermissionError as exc:
+        log.warning("Cannot read dataset root %s, treating its contents as unknown: %s",
+                    directory, exc)
+        return None
 
 
 def generation_value(datasets: list[str]) -> str:
@@ -155,7 +197,7 @@ def generation_value(datasets: list[str]) -> str:
 
     Node label values are limited to 63 characters, so this is a truncated
     digest rather than the dataset names themselves. Operators read the names
-    from the pod log or from active/ directly; the label exists so that
+    from the pod log or directly from ``datasetRoot``; the label exists so that
     "which nodes are current" is answerable with a single kubectl query.
     """
     if not datasets:
@@ -168,29 +210,12 @@ def generation_value(datasets: list[str]) -> str:
 # Sync
 # --------------------------------------------------------------------------
 
-def sweep_staging(staging: Path) -> None:
-    """
-    Clear the whole staging tree before the first pass.
-
-    Anything under staging/ is by definition an interrupted copy -- a completed
-    one was renamed away. Sweeping per-dataset at copy time is not enough: an
-    orphan left by a killed pod for a dataset that is no longer pending is
-    never revisited, and on this data that silently holds ~507 GiB of the
-    node's volume until someone notices.
-    """
-    if not staging.is_dir():
-        return
-    for leftover in staging.iterdir():
-        log.warning("Removing stale staging directory %s", leftover)
-        shutil.rmtree(leftover, ignore_errors=True)
-
-
 def rclone_transferred_bytes(output: str | None) -> int:
     """
-    Bytes moved, from the last "Transferred:" line rclone writes to stderr.
+    Bytes moved, from the last transfer-statistics line rclone writes.
 
-    Zero when nothing matched, which is what a fully resumed pass legitimately
-    reports -- so it is not treated as an error.
+    Zero when nothing matched, which is a legitimate result for an unchanged
+    mirror rather than an error.
     """
     matches = _RCLONE_XFER.findall(output or "")
     if not matches:
@@ -200,7 +225,7 @@ def rclone_transferred_bytes(output: str | None) -> int:
 
 
 def tree_bytes(root: Path) -> int:
-    """Total size of every file under `root`. Verification for the per-pass byte counts."""
+    """Total size of every file under ``root`` for pass statistics."""
     total = 0
     for directory, _dirs, files in os.walk(root):
         for name in files:
@@ -211,145 +236,72 @@ def tree_bytes(root: Path) -> int:
     return total
 
 
-def sync_dataset(source_dir: Path, staging: Path, active: Path, dataset: str,
-                 excludes: list[str] | None = None,
-                 transfers: int = DEFAULT_TRANSFERS,
-                 streams: int = DEFAULT_STREAMS) -> tuple[bool, int, float]:
-    """
-    Copy one dataset into staging with rclone, then rename it into active.
-
-    Returns (ok, bytes_transferred, seconds).
-    """
-    src = source_dir / dataset
-    stage = staging / dataset
-    dest = active / dataset
-
-    # Deliberately NOT wiped between attempts. An earlier version removed the
-    # staging directory before every attempt, which threw away the whole copy on
-    # any failure -- on this data that is up to 505 GiB and ~40 minutes of the
-    # shared FSx throughput budget discarded to re-fetch bytes already on
-    # disk. rclone skips files already matching on size and modtime, so a retry
-    # sends only what is missing.
-    #
-    # The killed-pod case is handled in two places:
-    # sweep_staging() clears the tree once at startup, and `rclone sync` below
-    # removes anything in staging that the source does not have.
-    resuming = stage.exists() and any(stage.iterdir())
-    if resuming:
-        log.info("Resuming into existing staging directory %s", stage)
-    stage.mkdir(parents=True, exist_ok=True)
-
-    cmd = ["rclone", "sync", str(src), str(stage),
-           # sync rather than copy: it deletes files staging holds that the
-           # source does not, which is what clears temp files left by a killed
-           # pod. Safe because staging is private to the agent and no service
-           # pod ever reads it.
-           #
-           # --inplace is NOT set and must never be. An interrupted --inplace
-           # transfer leaves a
-           # full-size file containing a hole -- indistinguishable from a
-           # complete copy by any size check.
-           "--metadata",            # rsync -a preserved ownership and mode
-           "--ignore-checksum",     # verifying re-reads both sides, ~2x cost
-           f"--transfers={transfers}",
-           f"--multi-thread-streams={streams}",
-           "--multi-thread-cutoff=256M",
-           "--multi-thread-chunk-size=64M",
-           # 128 KiB by default, which the rclone docs flag for filesystems that
-           # handle scattered small writes badly -- exactly this access pattern.
-           "--multi-thread-write-buffer-size=4M",
-           "--checkers=16",
-           "--stats=60s", "--stats-one-line", "-v"]
-
-    # the split zip archives beside the extracted dataset are its transfer
-    # format and no routing service reads them. Excluding them drops ~171 GiB
-    # per node per bootstrap.
-    for pattern in excludes or []:
-        cmd += ["--exclude", pattern]
-
-    log.info("Syncing dataset %s: %d transfers x %d streams", dataset, transfers, streams)
-    started = time.monotonic()
-    try:
-        result = run(cmd)
-    except subprocess.CalledProcessError as exc:
-        elapsed = time.monotonic() - started
-        # Leave staging in place. The next pass resumes into it rather than
-        # re-fetching everything already transferred (the pass retries on the next
-        # interval, and nothing partial is visible to a service pod because the
-        # rename into active/ only happens on success).
-        log.error("rclone failed for %s after %.1fs, keeping staging for resume: %s",
-                  dataset, elapsed, (exc.stderr or "").strip()[-2000:])
-        return False, 0, elapsed
-
-    elapsed = time.monotonic() - started
-    transferred = rclone_transferred_bytes(result.stderr)
-    staged = tree_bytes(stage)
-
-    # Atomic within the filesystem. A service pod either sees the complete
-    # dataset under active/ or does not see the directory at all.
-    try:
-        os.rename(stage, dest)
-    except OSError as exc:
-        # Keep staging: at this point the copy is COMPLETE and only the move
-        # failed, so discarding it would throw away a finished 505 GiB transfer
-        # over something like a transient EBUSY. The next pass re-verifies it
-        # cheaply -- every file matches on size and modtime, so rclone transfers
-        # nothing -- and retries the rename.
-        log.error("Could not move %s into place, keeping staging for retry: %s",
-                  dataset, exc)
-        return False, transferred, time.monotonic() - started
-
-    log.info("Dataset %s ready at %s (%d bytes transferred, %d bytes on disk, "
-             "%.1fs, %.1f MB/s)",
-             dataset, dest, transferred, staged, elapsed,
-             staged / elapsed / 1_000_000 if elapsed else 0.0)
-    return True, transferred, elapsed
-
-
 def sync_pass(source: Path, dest_root: Path,
               excludes: list[str] | None = None,
               transfers: int = DEFAULT_TRANSFERS,
               streams: int = DEFAULT_STREAMS) -> tuple[bool, int]:
     """
-    One pass over the source. Returns (no_failures, datasets_added).
+    Mirror the complete source tree directly into ``dest_root``.
 
-    Datasets already present in active/ are immutable and are skipped.
+    Exactly one recursive ``rclone sync <source>/ <dest_root>/`` is run. rclone
+    uses its default size-and-modification-time comparison and temporary-file
+    rename behavior; ``--inplace`` is never passed. Consequently replacement is
+    atomic for each completed file, but the tree is not an atomic snapshot and
+    completed changes are not rolled back if the command later fails.
+
+    Returns ``(ok, completed_syncs)``. A successful rclone exit completes the
+    whole pass, so ``completed_syncs`` is one on success and zero on failure.
     """
-    staging = dest_root / "staging"
-    active = dest_root / "active"
-    staging.mkdir(parents=True, exist_ok=True)
-    active.mkdir(parents=True, exist_ok=True)
+    dest_root.mkdir(parents=True, exist_ok=True)
 
-    available = list_datasets(source)
-    present = set(list_datasets(active))
-    pending = [d for d in available if d not in present]
+    # Trailing separators make the command's source-root and destination-root
+    # semantics explicit and avoid introducing an extra directory level.
+    source_root = f"{source}{os.sep}"
+    destination_root = f"{dest_root}{os.sep}"
+    cmd = [
+        "rclone", "sync", source_root, destination_root,
+        # Preserve ownership and mode as the previous rsync -a deployment did.
+        "--metadata",
+        f"--transfers={transfers}",
+        f"--multi-thread-streams={streams}",
+        "--multi-thread-cutoff=256M",
+        "--multi-thread-chunk-size=64M",
+        # The default 128 KiB is poor for this workload's scattered writes.
+        "--multi-thread-write-buffer-size=4M",
+        "--checkers=16",
+        "--stats=60s", "--stats-one-line", "-v",
+    ]
 
-    if not available:
-        log.warning("Source %s contains no dataset directories", source)
+    # Split zip archives are transfer artifacts and not routing-service data.
+    for pattern in excludes or []:
+        cmd += ["--exclude", pattern]
 
-    if not pending:
-        log.info("No new datasets. %d active: %s", len(present), ", ".join(sorted(present)) or "-")
-        return True, 0
+    log.info("Syncing source directly to %s: %d transfers x %d streams",
+             dest_root, transfers, streams)
+    started = time.monotonic()
+    try:
+        result = run(cmd, stream_stderr=True)
+    except subprocess.CalledProcessError as exc:
+        elapsed = time.monotonic() - started
+        # Direct mirroring has no whole-pass rollback. Completed per-file
+        # replacements may already be visible; a later pass reconciles them.
+        log.error("rclone mirror failed after %.1fs; completed file changes remain "
+                  "and the next pass will retry: %s",
+                  elapsed, (exc.stderr or "").strip()[-2000:])
+        return False, 0
 
-    log.info("%d new dataset(s) to sync: %s", len(pending), ", ".join(pending))
-
-    ok_all, added, total_bytes, total_secs = True, 0, 0, 0.0
-    for dataset in pending:
-        if _shutdown.is_set():
-            log.info("Shutdown requested, stopping before dataset %s", dataset)
-            break
-        ok, transferred, elapsed = sync_dataset(source, staging, active, dataset,
-                                                excludes, transfers, streams)
-        total_bytes += transferred
-        total_secs += elapsed
-        if ok:
-            added += 1
-        else:
-            ok_all = False
-
-    log.info("Pass complete: %d dataset(s) added, %d bytes, %.1fs total",
-             added, total_bytes, total_secs)
-    return ok_all, added
+    elapsed = time.monotonic() - started
+    transferred = rclone_transferred_bytes(result.stderr)
+    mirrored = tree_bytes(dest_root)
+    datasets = list_datasets(dest_root)
+    # None is "unreadable", not zero. Reporting 0 here would be a lie, and
+    # len(None) would take the process down after a pass that succeeded.
+    inventory = ("an unreadable dataset root" if datasets is None
+                 else f"{len(datasets)} dataset(s)")
+    log.info("Pass complete: direct mirror has %s, %d bytes "
+             "transferred, %d bytes on disk, %.1fs total",
+             inventory, transferred, mirrored, elapsed)
+    return True, 1
 
 
 # --------------------------------------------------------------------------
@@ -390,7 +342,8 @@ def apply_bootstrap_taint(node: str) -> bool:
     if result.returncode != 0:
         log.error("Could not re-apply taint to %s: %s", node, (result.stderr or "").strip())
         return False
-    log.warning("Re-applied taint %s to node %s: active/ is empty", BOOTSTRAP_TAINT, node)
+    log.warning("Re-applied taint %s to node %s: datasetRoot is absent or empty",
+                BOOTSTRAP_TAINT, node)
     return True
 
 
@@ -456,38 +409,45 @@ def write_generation_label(node: str, datasets: list[str]) -> bool:
     return True
 
 
-def reconcile_node_state(node: str, ok: bool, active_datasets: list[str],
+def reconcile_node_state(node: str, ok: bool, datasets: list[str] | None,
                          taint_removed: bool) -> bool:
     """
-    Bring the node's taint and labels into line with what active/ actually
-    holds. Returns the new value of `taint_removed`.
+    Reconcile readiness with the top-level dataset names in ``datasetRoot``.
 
-    The taint is a bootstrap gate: released once after the first pass that
-    leaves the node with data, and re-asserted only when active/ is empty.
-
-    Re-assertion exists for instance-store nodes. Local NVMe is lost on a
-    stop or a hardware replacement, not only on termination, and Karpenter's
-    startupTaints apply at registration only -- so a node whose data vanished
-    under it would otherwise stay schedulable and accept routing pods that have
-    nothing to read. An empty active/ after a clean pass means the data is gone,
-    not that a copy is still in flight; a pass that failed leaves everything
-    untouched, because that is the case where a copy may simply be incomplete.
+    ``datasets`` carries three outcomes and each gets its own treatment. None
+    means the root could not be read, so the inventory is unknown and node state
+    is left exactly as it is -- a complete but unreadable mirror must not be
+    re-tainted and must not have its generation label rewritten to "none". An
+    empty list means the node genuinely holds no datasets and legitimately
+    re-applies the startup taint, even after a failed pass, so a node with no
+    mirror cannot accept new consumers. Names present with a successful pass
+    updates the generation/count labels and opens the startup gate; the
+    generation is an identity of top-level names, not a checksum of file
+    contents. A failed pass that still has data leaves labels and taint
+    unchanged because completed per-file changes may represent only part of the
+    source tree.
     """
+    if datasets is None:
+        log.warning("Dataset root is unreadable; leaving the %s taint and the "
+                    "generation and count labels on node %s unchanged.",
+                    BOOTSTRAP_TAINT, node)
+        return taint_removed
+
+    if not datasets:
+        if apply_bootstrap_taint(node):
+            taint_removed = False
+        if ok:
+            # A successful empty mirror must stop advertising stale data.
+            write_generation_label(node, datasets)
+        return taint_removed
+
     if not ok:
-        log.warning("Pass had failures; leaving node state unchanged.")
+        log.warning("Pass failed with data still present; leaving node state unchanged.")
         return taint_removed
 
-    if active_datasets:
-        if not taint_removed:
-            taint_removed = remove_bootstrap_taint(node)
-        write_generation_label(node, active_datasets)
-        return taint_removed
-
-    if apply_bootstrap_taint(node):
-        taint_removed = False
-    # Labels follow the taint down, or the node keeps advertising a generation
-    # it no longer has -- and that label is what publish-time checks read.
-    write_generation_label(node, active_datasets)
+    if not taint_removed:
+        taint_removed = remove_bootstrap_taint(node)
+    write_generation_label(node, datasets)
     return taint_removed
 
 
@@ -500,10 +460,10 @@ def main() -> None:
         description="Periodic node-local dataset sync with Kubernetes taint and label management.")
     parser.add_argument("--source", required=True, help="Source directory (ONTAP mount)")
     parser.add_argument("--dest-root", required=True,
-                        help="Node-local root containing staging/ and active/")
+                        help="Node-local dataset root mirrored directly from the source")
     parser.add_argument("--interval", type=int, default=300, help="Seconds between passes")
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
-                        help="rsync exclude pattern; repeatable. Used to drop the split "
+                        help="rclone exclude pattern; repeatable. Used to drop the split "
                              "zip archives that sit beside the extracted dataset.")
     parser.add_argument("--transfers", type=int, default=DEFAULT_TRANSFERS, metavar="N",
                         help=f"rclone concurrent file transfers (default: {DEFAULT_TRANSFERS})")
@@ -547,22 +507,17 @@ def main() -> None:
     if args.exclude:
         log.info("Excluding: %s", ", ".join(args.exclude))
 
-    # clear interrupted copies once, before the first pass. Doing this at
-    # startup rather than per-dataset is what catches orphans for datasets that
-    # are no longer pending.
-    sweep_staging(dest_root / "staging")
-
     taint_removed = False
 
     while True:
-        ok, _added = sync_pass(source, dest_root,
-                               excludes=args.exclude,
-                               transfers=args.transfers,
-                               streams=args.streams)
-        active_datasets = list_datasets(dest_root / "active")
+        ok, _completed = sync_pass(source, dest_root,
+                                   excludes=args.exclude,
+                                   transfers=args.transfers,
+                                   streams=args.streams)
+        datasets = list_datasets(dest_root)
 
         if not args.no_node_patch:
-            taint_removed = reconcile_node_state(node, ok, active_datasets, taint_removed)
+            taint_removed = reconcile_node_state(node, ok, datasets, taint_removed)
 
         if args.once or _shutdown.wait(timeout=args.interval):
             break

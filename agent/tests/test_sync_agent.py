@@ -7,6 +7,8 @@ what gets copied and what gets hardlinked.
 """
 
 import json
+import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +44,38 @@ def test_list_datasets_ignores_files_and_dotfiles(tmp_path):
 
 def test_list_datasets_on_missing_directory_is_empty_not_an_error(tmp_path):
     assert sync_agent.list_datasets(tmp_path / "does-not-exist") == []
+
+
+def test_list_datasets_on_an_empty_readable_directory_is_empty(tmp_path):
+    """
+    Empty means "this node holds no datasets" and must stay distinguishable
+    from unreadable, because empty legitimately re-applies the bootstrap taint.
+    """
+    assert sync_agent.list_datasets(tmp_path) == []
+
+
+def test_list_datasets_on_an_unreadable_directory_is_none_not_empty(tmp_path):
+    """
+    A denied directory can still be stat'd, so `is_dir()` passes and
+    `iterdir()` raises PermissionError. Unpatched that reached the top of the
+    `while True:` loop and exited the process -- 269 then 379 pod restarts
+    observed live. Collapsing it to [] would be worse: reconcile_node_state
+    would re-taint a node whose mirror is complete.
+
+    Induced with mode bits rather than SELinux so the case is portable.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses mode bits, so the denial cannot be induced this way")
+
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    (denied / "GEODATA2026Q2").mkdir()
+    os.chmod(denied, 0o000)
+    try:
+        assert denied.is_dir(), "the directory must remain stat-able for this to be the real case"
+        assert sync_agent.list_datasets(denied) is None
+    finally:
+        os.chmod(denied, 0o755)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +188,7 @@ class _FakeRun:
         self.taint_rc = taint_rc
         self.commands: list[list[str]] = []
 
-    def __call__(self, cmd, check=True):
+    def __call__(self, cmd, check=True, *, stream_stderr=False):
         self.commands.append(cmd)
         if cmd[:3] == ["kubectl", "get", "node"]:
             if self.labels is None:
@@ -266,14 +300,67 @@ _APPLY = f"{sync_agent.BOOTSTRAP_TAINT}=true:NoSchedule"
 _REMOVE = f"{sync_agent.BOOTSTRAP_TAINT}-"
 
 
-def test_empty_active_reasserts_the_bootstrap_taint(monkeypatch):
+def test_successful_direct_sync_derives_labels_from_dataset_root_and_removes_taint(
+    tmp_path, monkeypatch,
+):
+    """A successful pass publishes readiness from the direct mirror's top level."""
+    source = tmp_path / "source"
+    dataset_root = tmp_path / "dataset-root"
+    source.mkdir()
+    dataset_root.mkdir()
+    expected_datasets = ["GEODATA2026Q1", "GEODATA2026Q3"]
+    for name in reversed(expected_datasets):
+        (source / name).mkdir()
+        mirrored_dataset = dataset_root / name
+        mirrored_dataset.mkdir()
+        (mirrored_dataset / "network.geodatabase").write_text(name)
+    (dataset_root / "mirror-metadata.txt").write_text("not a dataset")
+
+    fake = _FakeRun({})
+    monkeypatch.setattr(sync_agent, "run", fake)
+
+    ok, completed = sync_agent.sync_pass(source, dataset_root)
+    datasets = sync_agent.list_datasets(dataset_root)
+    taint_removed = sync_agent.reconcile_node_state(
+        "node-a", ok, datasets, taint_removed=False,
+    )
+
+    assert (ok, completed) == (True, 1)
+    assert datasets == expected_datasets
+    assert taint_removed is True
+    assert [command[4] for command in fake.taints] == [_REMOVE]
+    assert len(fake.writes) == 1
+    written = " ".join(fake.writes[0])
+    assert (
+        f"{sync_agent.GENERATION_LABEL}="
+        f"{sync_agent.generation_value(expected_datasets)}"
+    ) in written
+    assert f"{sync_agent.DATASET_COUNT_LABEL}=2" in written
+
+
+@pytest.mark.parametrize(
+    "dataset_root_exists",
+    [False, True],
+    ids=["absent-dataset-root", "empty-dataset-root"],
+)
+def test_absent_or_empty_dataset_root_reasserts_the_bootstrap_taint(
+    tmp_path, monkeypatch, dataset_root_exists,
+):
+    dataset_root = tmp_path / "dataset-root"
+    if dataset_root_exists:
+        dataset_root.mkdir()
+
     fake = _FakeRun(_labels_for(["GEODATA2026Q2"]))
     monkeypatch.setattr(sync_agent, "run", fake)
 
-    taint_removed = sync_agent.reconcile_node_state("node-a", True, [], taint_removed=True)
+    datasets = sync_agent.list_datasets(dataset_root)
+    taint_removed = sync_agent.reconcile_node_state(
+        "node-a", True, datasets, taint_removed=True,
+    )
 
+    assert datasets == []
     assert taint_removed is False, "the gate must close so it can reopen after a resync"
-    assert [c[4] for c in fake.taints] == [_APPLY]
+    assert [command[4] for command in fake.taints] == [_APPLY]
     assert "--overwrite" in fake.taints[0], "re-tainting must be idempotent"
 
 
@@ -328,19 +415,19 @@ def test_empty_active_resets_the_generation_labels(monkeypatch):
     assert f"{sync_agent.DATASET_COUNT_LABEL}=0" in written
 
 
-def test_a_failed_pass_leaves_node_state_untouched(monkeypatch):
+def test_a_failed_pass_with_an_empty_root_reapplies_the_taint(monkeypatch):
     """
-    A failed pass may just be an incomplete copy. Only a CLEAN pass that still
-    finds active/ empty means the data is genuinely gone -- re-tainting on a
-    transient rsync failure would flap the gate on every source hiccup.
+    A failed pass may leave completed file changes visible, but an absent or
+    empty datasetRoot must reapply the startup taint even when the pass failed.
+    Label updates still wait for a successful pass.
     """
     fake = _FakeRun(_labels_for(["GEODATA2026Q2"]))
     monkeypatch.setattr(sync_agent, "run", fake)
 
     taint_removed = sync_agent.reconcile_node_state("node-a", False, [], taint_removed=True)
 
-    assert taint_removed is True
-    assert fake.taints == []
+    assert taint_removed is False
+    assert [call[4] for call in fake.taints] == [_APPLY]
     assert fake.writes == []
 
 
@@ -357,3 +444,168 @@ def test_a_rejected_taint_write_does_not_reopen_the_gate(monkeypatch):
     assert taint_removed is True
     taint_removed = sync_agent.reconcile_node_state("node-a", True, [], taint_removed=taint_removed)
     assert [c[4] for c in fake.taints] == [_APPLY, _APPLY], "a failed apply must be retried"
+
+
+def test_an_unreadable_dataset_root_leaves_the_taint_and_labels_untouched(monkeypatch):
+    """
+    None from list_datasets means "unknown", so node state is left exactly as
+    it is: no taint applied, no taint removed, no label written.
+
+    This is the hazard that mattered more than the crash. A node whose mirror is
+    complete but unreadable must not be tainted and must not have its generation
+    label rewritten to "none" -- that destroys correct state, and the label is
+    what publish-time checks read.
+    """
+    fake = _FakeRun(_labels_for(["GEODATA2026Q2"]))
+    monkeypatch.setattr(sync_agent, "run", fake)
+
+    taint_removed = sync_agent.reconcile_node_state(
+        "node-a", True, None, taint_removed=True,
+    )
+
+    assert taint_removed is True, "an unknown inventory must not change the recorded gate state"
+    assert fake.taints == [], "unknown must neither apply nor remove the taint"
+    assert fake.writes == [], "unknown must not rewrite the generation or count labels"
+    assert fake.commands == [], "unknown must not touch the node object at all"
+
+
+def test_an_unreadable_root_does_not_reopen_a_closed_gate(monkeypatch):
+    """The pass-through is symmetric: a closed gate stays closed too."""
+    fake = _FakeRun({})
+    monkeypatch.setattr(sync_agent, "run", fake)
+
+    assert sync_agent.reconcile_node_state(
+        "node-a", False, None, taint_removed=False,
+    ) is False
+    assert fake.commands == []
+
+
+def test_an_empty_dataset_root_still_reapplies_the_taint_unlike_an_unreadable_one(monkeypatch):
+    """
+    The pair that proves the two outcomes are genuinely distinct. Same node,
+    same starting state: [] closes the gate and rewrites the labels, None does
+    nothing.
+    """
+    empty = _FakeRun(_labels_for(["GEODATA2026Q2"]))
+    monkeypatch.setattr(sync_agent, "run", empty)
+    assert sync_agent.reconcile_node_state("node-a", True, [], taint_removed=True) is False
+    assert [command[4] for command in empty.taints] == [_APPLY]
+    assert len(empty.writes) == 1
+
+    unreadable = _FakeRun(_labels_for(["GEODATA2026Q2"]))
+    monkeypatch.setattr(sync_agent, "run", unreadable)
+    assert sync_agent.reconcile_node_state("node-a", True, None, taint_removed=True) is True
+    assert unreadable.taints == []
+    assert unreadable.writes == []
+
+
+# ---------------------------------------------------------------------------
+# Streamed stderr (F7)
+#
+# --stats=60s --stats-one-line -v is worthless if it is buffered until rclone
+# exits: the 58.9-minute first sync on the replacement node logged nothing after
+# its startup banner. The streaming lives behind `run` rather than in a separate
+# function because every test in this suite intercepts rclone by patching
+# sync_agent.run, and argv must not change.
+# ---------------------------------------------------------------------------
+
+def _emitter(lines: list[str], exit_code: int = 0) -> list[str]:
+    """A command that writes `lines` to stderr, flushing each, then exits."""
+    script = (
+        "import sys\n"
+        f"for line in {lines!r}:\n"
+        "    sys.stderr.write(line + '\\n')\n"
+        "    sys.stderr.flush()\n"
+        f"sys.exit({exit_code})\n"
+    )
+    return [sys.executable, "-c", script]
+
+
+def test_streamed_stderr_reaches_the_log_before_the_process_exits(tmp_path, caplog):
+    """
+    Asserting only that the lines were logged by the time `run` returned would
+    also pass on the buffered implementation, which logs nothing until rclone
+    exits. So the child waits for proof that its first line was already logged
+    before it writes its last one: the interleaving is the behaviour under test.
+    """
+    handshake = tmp_path / "first-line-was-logged"
+    first = "INFO  :  100 GiB / 504.985 GiB, 20%, 1.1 GiB/s, ETA 6m"
+    last = "INFO  :  504.985 GiB / 504.985 GiB, 100%, 1.2 GiB/s, ETA 0s"
+
+    class _Handshake(logging.Handler):
+        def emit(self, record):
+            if first in record.getMessage():
+                handshake.touch()
+
+    script = (
+        "import pathlib, sys, time\n"
+        f"sys.stderr.write({first!r} + '\\n')\n"
+        "sys.stderr.flush()\n"
+        f"handshake = pathlib.Path({str(handshake)!r})\n"
+        "deadline = time.monotonic() + 30\n"
+        "while not handshake.exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "sys.stderr.write(('observed' if handshake.exists() else 'BUFFERED') + '\\n')\n"
+        f"sys.stderr.write({last!r} + '\\n')\n"
+    )
+
+    handler = _Handshake()
+    sync_agent.log.addHandler(handler)
+    try:
+        with caplog.at_level("INFO", logger="sync-agent"):
+            result = sync_agent.run([sys.executable, "-c", script], stream_stderr=True)
+    finally:
+        sync_agent.log.removeHandler(handler)
+
+    assert "observed" in result.stderr, (
+        "the first stderr line must reach the log while the process is still running"
+    )
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert result.returncode == 0
+    for line in (first, last):
+        assert line in logged, "every stats line must be logged as the pass runs"
+        assert line in result.stderr, "the accumulated stderr must stay complete"
+
+
+def test_streamed_stderr_is_still_parsed_for_the_last_statistics_line():
+    """
+    rclone_transferred_bytes matches the LAST statistics line, so accumulation
+    order matters as much as completeness.
+    """
+    lines = [
+        "INFO  :  100 GiB / 504.985 GiB, 20%, 1.1 GiB/s, ETA 6m",
+        "INFO  :  504.985 GiB / 504.985 GiB, 100%, 1.2 GiB/s, ETA 0s",
+    ]
+
+    result = sync_agent.run(_emitter(lines), stream_stderr=True)
+
+    assert sync_agent.rclone_transferred_bytes(result.stderr) == int(504.985 * 1024 ** 3)
+
+
+def test_streamed_stderr_still_raises_with_stderr_populated_on_failure():
+    """
+    sync_pass's handler reads (exc.stderr or "").strip()[-2000:], so a streamed
+    failure must carry the same payload a buffered one did.
+    """
+    lines = ["ERROR : lstat /mnt/geodata/GEODATA2026Q2: permission denied"]
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        sync_agent.run(_emitter(lines, exit_code=3), stream_stderr=True)
+
+    assert raised.value.returncode == 3
+    assert lines[0] in raised.value.stderr
+
+
+def test_streaming_is_opt_in_so_kubectl_calls_are_unchanged():
+    """
+    Default False keeps the kubectl callers byte-for-byte as they were. They log
+    stderr selectively -- remove_bootstrap_taint treats "not found" as a normal
+    info-level outcome -- and unconditional streaming would double-log it and
+    turn that into a spurious warning.
+    """
+    lines = ["not found"]
+
+    result = sync_agent.run(_emitter(lines, exit_code=1), check=False)
+
+    assert result.returncode == 1
+    assert "not found" in result.stderr
