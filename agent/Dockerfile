@@ -19,11 +19,11 @@
 # their own unmodified images.
 #
 # Build and push to a registry your cluster can pull from, then set
-# __IMAGE_REPOSITORY__ in ../manifests/07-sync-agent-daemonset.yaml to match:
+# `image.repository` in the Helm values file to match:
 #
-#     docker build --platform linux/amd64 -t geodata-sync-agent:0.4.0 .
-#     docker tag geodata-sync-agent:0.4.0 <registry>/geodata-sync-agent:0.4.0
-#     docker push <registry>/geodata-sync-agent:0.4.0
+#     docker build --platform linux/amd64 -t geodata-sync-agent:0.5.0 .
+#     docker tag geodata-sync-agent:0.5.0 <registry>/geodata-sync-agent:0.5.0
+#     docker push <registry>/geodata-sync-agent:0.5.0
 #
 # --platform linux/amd64 matters, because the node pool is x86_64 and this is
 # often built on an arm64 workstation.

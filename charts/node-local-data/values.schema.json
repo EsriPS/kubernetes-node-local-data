@@ -1,0 +1,271 @@
+{
+  "title": "node-local-data chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "namePrefix",
+    "namespace",
+    "labelDomain",
+    "workloadValue",
+    "datasetRoot",
+    "image",
+    "nfs",
+    "aws",
+    "ec2NodeClass",
+    "nodePool",
+    "warmCapacity",
+    "syncAgent",
+    "pathShim"
+  ],
+  "properties": {
+    "namePrefix": { "$ref": "#/definitions/dnsLabel" },
+    "namespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "name"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "$ref": "#/definitions/dnsLabel" }
+      }
+    },
+    "labelDomain": { "$ref": "#/definitions/dnsSubdomain" },
+    "workloadValue": { "$ref": "#/definitions/labelValue" },
+    "datasetRoot": { "type": "string", "minLength": 1 },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+        "tag": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "nfs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "shareName", "sharePath", "capacity", "mountOptions"],
+      "properties": {
+        "server": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+        "shareName": { "type": "string", "minLength": 1, "pattern": "^[^#\\s]+$" },
+        "sharePath": { "type": "string", "minLength": 1, "pattern": "^/\\S*$" },
+        "capacity": { "$ref": "#/definitions/positiveQuantity" },
+        "mountOptions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "aws": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amiAlias", "nodeRole", "subnetSelectorTerms", "securityGroupSelectorTerms"],
+      "properties": {
+        "amiAlias": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "description": "Pinned Karpenter family@version AMI alias, for example bottlerocket@v1.64.0; not an EC2 AMI ID or AMI name."
+        },
+        "nodeRole": { "type": "string", "minLength": 1, "pattern": "^\\S(?:.*\\S)?$" },
+        "subnetSelectorTerms": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/subnetSelectorTerm" }
+        },
+        "securityGroupSelectorTerms": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/securityGroupSelectorTerm" }
+        }
+      }
+    },
+    "ec2NodeClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataVolumeSize"],
+      "properties": {
+        "dataVolumeSize": { "$ref": "#/definitions/positiveQuantity" }
+      }
+    },
+    "nodePool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["architectures", "operatingSystems", "zones", "capacityTypes", "instanceRequirements", "limits"],
+      "properties": {
+        "architectures": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/labelValue" }
+        },
+        "operatingSystems": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/labelValue" }
+        },
+        "zones": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/labelValue" }
+        },
+        "capacityTypes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["on-demand", "spot", "reserved"] }
+        },
+        "instanceRequirements": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/karpenterRequirement" }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nodes", "cpu"],
+          "properties": {
+            "nodes": { "type": "integer", "minimum": 1 },
+            "cpu": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "warmCapacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "replicas", "priority", "image"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicas": { "type": "integer", "minimum": 0 },
+        "priority": { "type": "integer", "minimum": -2147483648, "maximum": 1000000000 },
+        "image": { "type": "string", "minLength": 1, "pattern": "^\\S+$" }
+      }
+    },
+    "syncAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intervalSeconds", "transfers", "multiThreadStreams", "excludes", "memory", "terminationGracePeriodSeconds"],
+      "properties": {
+        "intervalSeconds": { "type": "integer", "minimum": 1 },
+        "transfers": { "type": "integer", "minimum": 1 },
+        "multiThreadStreams": { "type": "integer", "minimum": 1 },
+        "excludes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "memory": { "$ref": "#/definitions/positiveQuantity" },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "pathShim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "image"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "type": "string", "minLength": 1, "pattern": "^\\S+$" }
+      }
+    },
+    "localVolume": {
+      "description": "REMOVED in chart 0.2.0. Not a supported setting and not required. It is declared here, accepting any value, only so that a leftover key from a 0.1.0 values file passes schema validation and reaches the explanatory rejection in templates/_validate.tpl. Schema validation runs before templates in Helm, so with additionalProperties false and no declaration here the key would fail as a bare unknown property and the operator would never see the explanation."
+    }
+  },
+  "definitions": {
+    "dnsLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"
+    },
+    "dnsSubdomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "labelValue": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[A-Za-z0-9](?:[-A-Za-z0-9_.]*[A-Za-z0-9])?$"
+    },
+    "positiveQuantity": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+|[EPTGMK]i?|[numk])?$"
+    },
+    "selectorTags": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "type": "string", "minLength": 1 },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "subnetSelectorTerm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+        "tags": { "$ref": "#/definitions/selectorTags" }
+      },
+      "anyOf": [
+        { "required": ["id"] },
+        { "required": ["tags"] }
+      ]
+    },
+    "securityGroupSelectorTerm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+        "name": { "type": "string", "minLength": 1 },
+        "tags": { "$ref": "#/definitions/selectorTags" }
+      },
+      "anyOf": [
+        { "required": ["id"] },
+        { "required": ["name"] },
+        { "required": ["tags"] }
+      ]
+    },
+    "karpenterRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "operator", "values"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "operator": { "type": "string", "enum": ["In", "NotIn", "Exists", "DoesNotExist", "Gt", "Lt"] },
+        "values": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "minValues": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "operator": { "enum": ["In", "NotIn"] } } },
+          "then": { "properties": { "values": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "operator": { "enum": ["Exists", "DoesNotExist"] } } },
+          "then": { "properties": { "values": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "operator": { "enum": ["Gt", "Lt"] } } },
+          "then": {
+            "properties": {
+              "values": {
+                "minItems": 1,
+                "maxItems": 1,
+                "items": { "type": "string", "pattern": "^[0-9]+$" }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

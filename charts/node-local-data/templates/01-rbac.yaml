@@ -1,0 +1,39 @@
+# SECURITY: node patch permission is cluster-wide; a compromised sync-agent pod
+# could taint or label any node because Kubernetes nodes are cluster-scoped.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "node-local-data.syncAgentName" . }}
+  namespace: {{ include "node-local-data.namespace" . }}
+  labels:{{ include "node-local-data.commonLabels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "node-local-data.syncAgentName" . }}
+  labels:{{ include "node-local-data.commonLabels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    # Read current taints and labels, then patch only those node fields.
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "node-local-data.syncAgentName" . }}
+  labels:{{ include "node-local-data.commonLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "node-local-data.syncAgentName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "node-local-data.syncAgentName" . }}
+    namespace: {{ include "node-local-data.namespace" . }}

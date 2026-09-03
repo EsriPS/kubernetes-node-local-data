@@ -1,0 +1,82 @@
+{{- include "node-local-data.validate" . -}}
+{{- if .Values.pathShim.enabled }}
+# ArcGIS hostPath registration requires this exact path on every schedulable
+# node. DirectoryOrCreate and the containers only create it; uninstall removes
+# the DaemonSet without deleting node filesystem content.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "node-local-data.pathShimName" . }}
+  namespace: {{ include "node-local-data.namespace" . }}
+  labels:
+    {{- include "node-local-data.commonLabels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "node-local-data.selectorLabels" (include "node-local-data.pathShimName" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "node-local-data.selectorLabels" (include "node-local-data.pathShimName" .) | nindent 8 }}
+        {{- include "node-local-data.commonLabels" . | nindent 8 }}
+    spec:
+      # Run on every node, including dedicated nodes that are still completing
+      # their first sync, so ArcGIS hostPath mounts remain schedulable.
+      tolerations:
+        - key: {{ include "node-local-data.dedicatedTaintKey" . }}
+          operator: Equal
+          value: {{ .Values.workloadValue | quote }}
+          effect: NoSchedule
+        - key: {{ include "node-local-data.dataNotReadyTaintKey" . }}
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 5
+      # Kubelet creates datasetRoot through DirectoryOrCreate before this runs;
+      # the init container verifies and reasserts that exact configured path.
+      initContainers:
+        - name: ensure-path
+          image: {{ .Values.pathShim.image | quote }}
+          command:
+            - sh
+            - -c
+            - 'mkdir -p "$DATASET_ROOT" && ls -ld "$DATASET_ROOT"'
+          env:
+            - name: DATASET_ROOT
+              value: {{ include "node-local-data.datasetRoot" . | quote }}
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: dataset-root
+              mountPath: {{ include "node-local-data.datasetRoot" . | quote }}
+      containers:
+        - name: keep-path
+          image: {{ .Values.pathShim.image | quote }}
+          # Re-create the path if it is removed while the pod is running. This
+          # is creation-only behavior and is not invoked during uninstall.
+          command:
+            - sh
+            - -c
+            - 'while true; do mkdir -p "$DATASET_ROOT"; sleep 60; done'
+          env:
+            - name: DATASET_ROOT
+              value: {{ include "node-local-data.datasetRoot" . | quote }}
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: dataset-root
+              mountPath: {{ include "node-local-data.datasetRoot" . | quote }}
+      volumes:
+        - name: dataset-root
+          hostPath:
+            path: {{ include "node-local-data.datasetRoot" . | quote }}
+            type: DirectoryOrCreate
+{{- end }}

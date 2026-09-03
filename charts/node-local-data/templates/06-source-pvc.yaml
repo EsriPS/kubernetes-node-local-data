@@ -1,0 +1,16 @@
+# This claim is pre-bound to the chart's static source PersistentVolume.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "node-local-data.sourcePersistentVolumeClaimName" . }}
+  namespace: {{ include "node-local-data.namespace" . }}
+  labels:
+    {{- include "node-local-data.commonLabels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: {{ include "node-local-data.sourceStorageClassName" . }}
+  volumeName: {{ include "node-local-data.sourcePersistentVolumeName" . }}
+  resources:
+    requests:
+      storage: {{ .Values.nfs.capacity }}

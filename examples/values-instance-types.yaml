@@ -1,0 +1,32 @@
+# Example environment values that replace the default resource floors with an
+# explicit Karpenter instance-type requirement.
+labelDomain: data.example.com
+
+image:
+  repository: 123456789012.dkr.ecr.us-east-1.amazonaws.com
+
+nfs:
+  server: 10.0.0.10
+  shareName: geodata
+  sharePath: /geodata
+  capacity: 1536Gi
+
+aws:
+  # Karpenter family@version alias; this is not an EC2 AMI ID or AMI name.
+  amiAlias: bottlerocket@v1.32.0
+  nodeRole: KarpenterNodeRole-geodata
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: geodata-cluster
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: geodata-cluster
+
+nodePool:
+  zones:
+    - us-east-1a
+  instanceRequirements:
+    - key: karpenter.k8s.aws/instance-type
+      operator: In
+      values:
+        - r8id.8xlarge

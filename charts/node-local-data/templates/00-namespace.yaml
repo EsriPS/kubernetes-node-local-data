@@ -1,0 +1,10 @@
+{{- include "node-local-data.validate" . -}}
+{{- if .Values.namespace.create }}
+# The sync agent uses a dedicated namespace; its source claim is separate from
+# any operator-managed claim used by ArcGIS.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "node-local-data.namespace" . }}
+  labels:{{ include "node-local-data.commonLabels" . | nindent 4 }}
+{{- end }}

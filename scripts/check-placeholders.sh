@@ -14,36 +14,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Fails if any __PLACEHOLDER__ token is still unreplaced. Run from the
-# repository root before applying anything.
+# Render the documented example exactly as an install dry run so Helm includes
+# both release manifests and NOTES, then reject any unreplaced placeholder.
 
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+chart="$root/charts/node-local-data"
+values="$root/examples/values-example.yaml"
 
-# ONLY manifests/ IS SCANNED, deliberately. Everything that gets applied to a
-# cluster lives there, so it is the only place a leftover token can actually
-# break something.
-#
-# Scanning the whole tree instead, with a list of files to exclude, is what this
-# script used to do and it failed even on a correct substitution. Prose outside
-# manifests/ names these tokens on purpose: README.md and RESULTS.md document
-# them, and agent/Dockerfile and agent/sync_agent.py each carry a comment
-# pointing at __IMAGE_REPOSITORY__ and __LABEL_DOMAIN__ to say where they are
-# set. Those are references to the tokens, not uses of them, so matching them
-# was a false positive. Keeping the scan scoped to what is applied means the
-# exclude list cannot drift out of date as documentation is added.
-manifests="$root/manifests"
+rendered="$(helm install placeholder-check "$chart" \
+  --namespace placeholder-check \
+  --values "$values" \
+  --dry-run \
+  --debug 2>&1)"
 
-if [[ ! -d "$manifests" ]]; then
-  echo "No manifests directory found at $manifests" >&2
+if hits="$(grep -En '__[A-Z0-9_]+__' <<<"$rendered")"; then
+  echo "Unreplaced placeholders found in rendered manifests or NOTES:" >&2
+  echo "$hits" >&2
   exit 1
 fi
 
-if hits=$(grep -rn '__[A-Z0-9_]\+__' "$manifests" 2>/dev/null); then
-  echo "Unreplaced placeholders found:"
-  echo "$hits"
-  exit 1
-fi
-
-echo "No unreplaced placeholders in manifests/."
+echo "No unreplaced placeholders in rendered manifests or NOTES."

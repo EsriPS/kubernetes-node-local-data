@@ -1,0 +1,65 @@
+{{- include "node-local-data.validate" . -}}
+{{- if .Values.warmCapacity.enabled }}
+# Warm-capacity pods keep distinct dedicated nodes provisioned so the local
+# mirror can be ready before real workload arrives.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ include "node-local-data.warmCapacityName" . }}
+value: {{ .Values.warmCapacity.priority }}
+preemptionPolicy: Never
+globalDefault: false
+description: >-
+  Holds dedicated nodes open so node-local data is staged before workload
+  arrives. Lowest priority in the cluster.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "node-local-data.warmCapacityName" . }}
+  namespace: {{ include "node-local-data.namespace" . }}
+  labels:
+    {{- include "node-local-data.selectorLabels" (include "node-local-data.warmCapacityName" .) | nindent 4 }}
+    {{- include "node-local-data.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.warmCapacity.replicas }}
+  selector:
+    matchLabels:
+      {{- include "node-local-data.selectorLabels" (include "node-local-data.warmCapacityName" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "node-local-data.selectorLabels" (include "node-local-data.warmCapacityName" .) | nindent 8 }}
+    spec:
+      priorityClassName: {{ include "node-local-data.warmCapacityName" . }}
+      nodeSelector:
+        {{- include "node-local-data.workloadSelector" . | nindent 8 }}
+      # Tolerate both the permanent dedicated-node taint and the startup gate so
+      # placeholders can reserve nodes while their first data sync completes.
+      tolerations:
+        - key: {{ include "node-local-data.dataNotReadyTaintKey" . }}
+          value: "true"
+          effect: NoSchedule
+        - key: {{ include "node-local-data.dedicatedTaintKey" . }}
+          value: {{ .Values.workloadValue | quote }}
+          effect: NoSchedule
+      # Required hostname anti-affinity, rather than inflated CPU requests,
+      # makes every replica reserve a distinct node.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "node-local-data.selectorLabels" (include "node-local-data.warmCapacityName" .) | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: pause
+          image: {{ .Values.warmCapacity.image }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 16Mi
+      terminationGracePeriodSeconds: 0
+{{- end }}
