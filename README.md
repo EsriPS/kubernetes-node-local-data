@@ -1,28 +1,28 @@
 # Node-local data stores for routing and geocoding
 
-Routing and geocoding services read large file-based datasets. Served over a
-network, for example, NFS, SMB, or network-attached storage (e.g., EBS, Azure Disk),
-that read path is slower than reading from the node's own disk. This guide stages a
-copy of the dataset onto each node in a pool dedicated just to geocoding and routing
-workloads, using instance-storage instead of network storage, and blocks traffic to 
-the node until the copy is complete, and registers it with ArcGIS Enterprise as a 
-folder data store.
+Routing and geocoding services read large file-based datasets. This project
+provisions a dedicated Karpenter node pool on AWS, mirrors an authoritative NFS
+export onto each node's instance-store NVMe, and exposes that mirror to ArcGIS
+Enterprise on Kubernetes.
 
-This process has been tested by copying roughly 500 GB onto two nodes in about five minutes. 
-Sample code and manifests are provided as-is and unsupported.
+The Helm chart is the maintained deployment source. Sample code is provided
+as-is and unsupported. The historical performance test copied roughly 500 GB to
+two nodes in about five minutes; see [RESULTS.md](RESULTS.md) for the test
+conditions and limitations.
 
 ## Table of contents
 
 - [What this is for](#what-this-is-for)
 - [How it works](#how-it-works)
-- [Requirements](#requirements)
-- [Configuration](#configuration)
-- [Apply order](#apply-order)
-- [Registering the data stores](#registering-the-data-stores)
-- [Rescheduling the publishing tool pods](#rescheduling-the-publishing-tool-pods)
-- [Setting the default placement properties for Map and GP services](#setting-the-default-placement-properties-for-map-and-gp-services)
-- [Verifying](#verifying)
-- [Replacing a node](#replacing-a-node)
+- [Prerequisites](#prerequisites)
+- [Configure the chart](#configure-the-chart)
+- [Install the chart](#install-the-chart)
+- [Register the ArcGIS data store](#register-the-arcgis-data-store)
+- [Place ArcGIS workloads](#place-arcgis-workloads)
+- [Verify the deployment](#verify-the-deployment)
+- [Why the mirror must not be relabeled](#why-the-mirror-must-not-be-relabeled)
+- [Operations](#operations)
+- [Troubleshooting](#troubleshooting)
 - [Not covered](#not-covered)
 - [Tuning notes](#tuning-notes)
 - [Official documentation](#official-documentation)
@@ -30,382 +30,802 @@ Sample code and manifests are provided as-is and unsupported.
 
 ## What this is for
 
-Use this for provisioning large, read-only, file-based locators and network dataset
-that change infrequently. A network dataset with quarterly releases is the case it
-was built for.
-
-It is a poor fit when the data changes frequently, because every change means
-staging a fresh copy onto every node in the pool. It is unnecessary when the
-dataset is small enough that a network share keeps up.
+Use this project for large, read-only, file-based locators and network datasets
+that change infrequently. A network dataset with quarterly releases is the case
+it was built for. It is a poor fit for frequently changing data and unnecessary
+when a network share already meets the workload's latency and throughput needs.
 
 ## How it works
 
-A DaemonSet runs on a dedicated node pool. On each pass it copies any dataset
-the node does not yet hold from an NFS export onto the node's local drive.
+The ONTAP or other NFS export is authoritative. A sync-agent DaemonSet mirrors
+that source directly into the configured `datasetRoot` on every dedicated node.
+The default and all commands in this guide use the exact path `/mnt/geodata`.
+If you override `datasetRoot`, use that exact rendered value for the EC2 bind,
+Path Shim hostPath, readiness checks, and the ArcGIS registration.
 
-Three properties make it safe to point a production service at:
+The NodePool starts nodes with a data-not-ready taint. After a successful first
+sync, the agent records dataset-generation and dataset-count labels and removes
+that taint. The permanent dedicated taint remains, so only workloads configured
+for the `geodata` workload can schedule there.
 
-**Data appears atomically.** Each dataset is copied into a staging directory and
-moved into place with a rename. A service never sees a partially transferred
-dataset, because the rename is atomic within a filesystem and the staging
-directory sits on the same one.
-
-**Nodes are protected until they hold data.** The pool applies a startup taint at
-registration. The agent removes it after the first successful pass, which is
-what releases service pods to schedule there. The agent also re-applies it if
-the node's data disappears, which matters because instance-store data is lost
-on a stop rather than only on termination.
-
-**Nodes advertise what they hold.** After every successful pass the agent writes
-a generation label to the node. Check it across the pool before publishing a
-service that depends on a particular release.
-
-```
-NFS export ──> sync agent DaemonSet ──> /mnt/geodata/staging/<dataset>
-                                              │ atomic rename
-                                              v
-                                        /mnt/geodata/active/<dataset>
-                                              │
-                            ┌─────────────────┴─────────────────┐
-                            v                                   v
-                  local PersistentVolume              hostPath folder data store
-                       (geocoding)                           (routing)
+```text
+NFS export ──> sync-agent DaemonSet ──> /mnt/geodata
+                                               │
+                                               v
+                              one hostPath folder data store
+                                 (routing and geocoding)
 ```
 
-## Requirements
+**One directory, one mount type.** Routing and geocoding both read the mirror
+through the single organization-wide hostPath folder data store. The chart
+renders no `local` PersistentVolume, and it refuses to render if a `localVolume`
+key is present, because the `local` volume plugin relabels the tree it mounts
+and would lock every other consumer out of `/mnt/geodata`. See
+[Why the mirror must not be relabeled](#why-the-mirror-must-not-be-relabeled).
 
-- A Kubernetes cluster deployed on AWS Elastic Kubernetes Service
-- ArcGIS Enterprise on Kubernetes (EKS) 12.0 or later
-- Karpenter, with permission to create a NodePool and an EC2NodeClass
-- Bottlerocket nodes with instance-store NVMe. The bootstrap commands in
-  `manifests/02-ec2nodeclass.yaml` are Bottlerocket-specific
-- `csi-driver-nfs` installed in the cluster. The in-tree NFS plugin needs a
-  mount helper on the host that Bottlerocket does not ship:
+The optional Path Shim creates `/mnt/geodata` on every eligible cluster node so
+ArcGIS can mount that organization-wide hostPath. On dedicated nodes the path is
+the instance-store mirror; on other nodes it is an empty directory.
 
-  ```bash
-  helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
-  helm install csi-driver-nfs csi-driver-nfs/csi-driver-nfs -n kube-system
-  ```
+### Mirror consistency and source publication
 
-- An existing NFS export holding the dataset, reachable from the node pool's
-  security group. This was tested with FSx for NetApp ONTAP but another NFS share 
-  with sufficient throughput and IOPS should also work.
-- Amazon Elastic Container Registry (ECR) to host the agent container image
-- A Docker environment, .e.g., Docker Desktop, to build the agent container image 
+ONTAP is the authoritative source, and `datasetRoot` is its direct mirror. Each
+pass runs exactly one recursive `rclone sync <source>/ <datasetRoot>/`.
+Included files added or changed on ONTAP appear in the mirror, and destination
+files removed from ONTAP are deleted, subject to the configured excludes.
+Node-local content is not retained independently of its source.
 
-## Configuration
+Rclone's default comparison uses file size and modification time. Publishing a
+same-named source file must therefore change its size or modification time for
+the agent to detect it without checksum mode. The agent deliberately does not
+use `--inplace`: rclone transfers changed content to a temporary file and
+renames that file over the destination only after the transfer completes. A
+final file path is therefore replaced atomically per file, but the whole tree is
+not an atomic snapshot. Consumers can observe a mix of old and new files while
+a pass is running; coordinate source publication with workload draining or
+restarts when a release requires cross-file atomicity.
 
-Every environment-specific value is a `__PLACEHOLDER__` token. Replace all of
-them before applying anything.
+There is no second full mirror tree. Size instance storage for the complete
+source mirror, rclone's temporary files for transfers and replacements, and
+operational headroom. If a pass is interrupted, completed additions,
+replacements, or deletions are not rolled back. The agent retries on the next
+interval, and a later successful pass reconciles the mirror and any transfer
+temporary files.
 
-| Placeholder | Meaning |
-|---|---|
-| `__LABEL_DOMAIN__` | DNS domain for label and taint keys, for example `geodata.example.com`. Must match the `LABEL_DOMAIN` environment variable passed to the agent |
-| `__IMAGE_REPOSITORY__` | Container registry path for the agent image you build |
-| `__NFS_SERVER__` | Hostname of the NFS server holding the dataset |
-| `__NFS_SHARE_NAME__` | Share name, used only to build a unique volume handle |
-| `__NFS_SHARE_PATH__` | Export path, for example `/data` |
-| `__AMI_ALIAS__` | Pinned Bottlerocket version, for example `bottlerocket@v1.64.0` |
-| `__NODE_IAM_ROLE__` | Instance profile role for Karpenter-launched nodes |
-| `__SUBNET_TAG_KEY__`, `__SUBNET_TAG_VALUE__` | Tag identifying the subnets Karpenter may launch into, for example `karpenter.sh/discovery` and your cluster name. Selects any number of subnets, so one subnet or several needs no structural change. `02-ec2nodeclass.yaml` carries a commented ID-based alternative |
-| `__SECURITY_GROUP_ID__` | Security group with access to the NFS export |
-| `__ZONE__` | Availability zone to launch into. One zone is the default. Adding zones is a deliberate cost-for-redundancy trade, and a multi-AZ source does not make it free; read the reasoning in `03-nodepool.yaml` first |
+After a successful pass, the dataset-generation label hashes the sorted
+**top-level names** in `datasetRoot`, and dataset-count records their count. The
+generation label identifies that top-level dataset set; it is not a checksum of
+file contents, so an in-place content update beneath the same names does not
+change it.
 
-Check that none remain:
+## Prerequisites
+
+- Kubernetes 1.25 or later on Amazon EKS.
+- ArcGIS Enterprise on Kubernetes 12.0 or later.
+- Helm CLI 3.0.0 or later.
+- Karpenter with the `karpenter.sh/v1` NodePool API and
+  `karpenter.k8s.aws/v1` EC2NodeClass API.
+- Bottlerocket nodes with instance-store NVMe.
+- The NFS CSI driver `nfs.csi.k8s.io`.
+- An existing NFS export reachable from the selected subnets and security
+  groups. FSx for NetApp ONTAP was used for the measured configuration.
+- A container registry and Docker-compatible build environment for the agent
+  image.
+
+Verify the client and cluster prerequisites before installation:
 
 ```bash
-./scripts/check-placeholders.sh
+helm version --short
+kubectl api-resources --api-group=karpenter.sh -o wide | grep -E 'karpenter\.sh/v1[[:space:]].*NodePool'
+kubectl api-resources --api-group=karpenter.k8s.aws -o wide | grep -E 'karpenter\.k8s\.aws/v1[[:space:]].*EC2NodeClass'
+kubectl get csidriver nfs.csi.k8s.io
 ```
 
-Build and push the agent image, then set `__IMAGE_REPOSITORY__` to match:
+If the NFS CSI driver is not installed, follow its upstream installation
+instructions. One Helm-based installation is:
 
 ```bash
+helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+helm repo update
+helm install csi-driver-nfs csi-driver-nfs/csi-driver-nfs --namespace kube-system
+```
+
+The sync agent can patch Kubernetes nodes to manage readiness taints and labels.
+Its ClusterRole is limited to `get`, `list`, `watch`, and `patch` on nodes, but
+that permission is cluster-wide and should be treated as a trust boundary.
+
+## Configure the chart
+
+Copy the documented environment example and keep the resulting file under your
+normal configuration controls:
+
+```bash
+cp examples/values-example.yaml my-values.yaml
+helm show values charts/node-local-data
+```
+
+Set the installation-specific values in `my-values.yaml`:
+
+- `labelDomain`: a DNS domain you control for labels and taints.
+- `image.repository`: the registry path that contains the agent image.
+- `nfs.server`, `nfs.shareName`, and `nfs.sharePath`: the source export.
+- `nfs.capacity`: the declared capacity used by both the source PV and PVC.
+- `aws.amiAlias`: a tested, pinned Karpenter AMI alias in
+  `family@version` format, for example `bottlerocket@v1.64.0`. This is a
+  Karpenter selector—not an EC2 AMI ID such as `ami-...` or an EC2 AMI name
+  such as `bottlerocket-aws-k8s-...`.
+- `aws.nodeRole`: the IAM role used by Karpenter-launched nodes.
+- `aws.subnetSelectorTerms` and `aws.securityGroupSelectorTerms`: native
+  EC2NodeClass selector terms.
+- `nodePool.zones`: one or more availability zones.
+
+The chart renders `aws.amiAlias` as `spec.amiSelectorTerms[].alias` on the
+EC2NodeClass. Karpenter resolves that alias to an EKS-optimized AMI for the
+cluster's Kubernetes version and AWS Region. To list available Bottlerocket
+versions from AWS Systems Manager Parameter Store, set your control-plane
+version and run:
+
+```bash
+K8S_VERSION=1.34
+aws ssm get-parameters-by-path \
+  --path "/aws/service/bottlerocket/aws-k8s-$K8S_VERSION" \
+  --recursive \
+  --query 'Parameters[].Name' \
+  --output text |
+  tr '\t' '\n' |
+  grep -v '/latest/' |
+  awk -F/ '{print $7}' |
+  sort -u
+```
+
+Prefix the selected semantic version with `v` in the Karpenter alias; for
+example, SSM version `1.64.0` becomes `bottlerocket@v1.64.0`. See Karpenter's
+[EC2NodeClass AMI selector documentation](https://karpenter.sh/docs/concepts/nodeclasses/#specamiselectorterms).
+
+The documented example uses tag-based subnet and security-group selectors, one
+zone, and `nfs.capacity: 1536Gi`. `workloadValue` defaults to `geodata` in
+`charts/node-local-data/values.yaml` and does not need to be repeated in
+`my-values.yaml`. If you override it, update the commands and ArcGIS placement
+values below to match the rendered chart.
+
+Build and push the supported agent image to Amazon ECR. Replace the sample
+account ID, Region, and namespace before running these commands. The ECR
+repository is `<namespace>/geodata-sync-agent`, while `image.repository` is the
+registry and optional namespace prefix because the chart appends
+`geodata-sync-agent:0.5.0`.
+
+```bash
+# Replace these three sample values for your AWS environment.
+AWS_ACCOUNT_ID="123456789012"
+AWS_REGION="us-west-2"
+ECR_NAMESPACE="team"
+
+ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+ECR_REPOSITORY="${ECR_NAMESPACE}/geodata-sync-agent"
+IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:0.5.0"
+
+# Authenticate Docker and create the ECR repository once if it does not exist.
+aws ecr get-login-password --region "$AWS_REGION" |
+  docker login --username AWS --password-stdin "$ECR_REGISTRY"
+aws ecr describe-repositories \
+  --region "$AWS_REGION" \
+  --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1 ||
+  aws ecr create-repository \
+    --region "$AWS_REGION" \
+    --repository-name "$ECR_REPOSITORY" >/dev/null
+
 cd agent
-docker build --platform linux/amd64 -t geodata-sync-agent:0.4.0 .
-docker tag geodata-sync-agent:0.4.0 <registry>/geodata-sync-agent:0.4.0
-docker push <registry>/geodata-sync-agent:0.4.0
+docker build --platform linux/amd64 -t geodata-sync-agent:0.5.0 .
+docker tag geodata-sync-agent:0.5.0 "$IMAGE_URI"
+docker push "$IMAGE_URI"
+cd ..
 ```
 
-## Apply order
+The `docker tag` command is required: `docker push` only accepts a destination
+tag that already exists in the local image store. A `tag does not exist` error
+for the ECR URI means that exact local destination tag was not created (or the
+source image was built under a different name or tag).
 
-Numeric order is apply order.
+For the variables above, configure the chart with the prefix—not the final image
+name or tag:
+
+```yaml
+image:
+  repository: 123456789012.dkr.ecr.us-west-2.amazonaws.com/team
+```
+
+Replace the sample account ID, Region, and namespace in that value as well.
+
+### Important defaults
+
+The complete defaults are in `charts/node-local-data/values.yaml`. Operationally
+important defaults include:
+
+| Value | Default | Meaning |
+|---|---:|---|
+| `datasetRoot` | `/mnt/geodata` | Exact EC2 bind target, mirror root, Path Shim path, and the one ArcGIS hostPath registration path shared by routing and geocoding |
+| `ec2NodeClass.dataVolumeSize` | `200Gi` | Bottlerocket data volume; it does not hold the dataset mirror |
+| `nodePool.limits.nodes` | `3` | Explicit maximum node count |
+| `nodePool.limits.cpu` | `144` | Explicit CPU limit, independent of node count |
+| `warmCapacity.enabled` / `replicas` | `true` / `2` | Keep two distinct dedicated nodes provisioned |
+| `pathShim.enabled` | `true` | Create `/mnt/geodata` on eligible nodes for the organization-wide hostPath registration |
+
+There is no `localVolume` value. It was removed in chart 0.2.0 along with the
+`geodata-local-sc` StorageClass and the `geodata-local-pv` PersistentVolume, and
+a values file that still carries the key fails rendering with an explanation
+rather than being silently ignored.
+
+The source capacity, Bottlerocket data-volume size, and local NVMe instance
+requirement are independent settings. The chart does not infer or convert one
+from another. The default instance requirements select at least 1200 GB of local
+NVMe by rendering Karpenter's `Gt: "1199"`; Karpenter uses GB for that
+requirement, while Kubernetes capacities use quantities such as Gi.
+
+The selected instance type must have enough instance-store space for the entire
+source mirror, transfer-temporary files, and operational headroom. Nothing in
+this chart imposes a quota on `/mnt/geodata`.
+
+### Replace the instance requirement list
+
+`nodePool.instanceRequirements` is one replaceable native Karpenter list. The
+default list expresses measured category, generation, CPU, memory, local-NVMe,
+and network floors. Karpenter validates scheduling feasibility; the chart does
+not verify that replacement requirements provide enough storage, CPU, memory,
+or network bandwidth.
+
+To pin tested instance types, replace the entire default list rather than adding
+a chart-specific mode:
+
+```yaml
+nodePool:
+  instanceRequirements:
+    - key: karpenter.k8s.aws/instance-type
+      operator: In
+      values:
+        - r8id.8xlarge
+        - i7i.8xlarge
+```
+
+`examples/values-instance-types.yaml` is a complete documented example with the
+required environment values and an explicit instance-type requirement.
+
+## Install the chart
+
+One install brings up the whole chart. There is no second stage: with the local
+PersistentVolume removed, nothing is held back to be enabled after the first
+sync, and the only thing gated on first sync is ArcGIS publication. Helm owns
+every rendered object; there are no keep annotations or install/uninstall hooks.
+
+Set reusable shell variables. The release is stored in the `default` namespace,
+while the chart creates its default workload namespace `geodata-sync`:
 
 ```bash
-kubectl apply -f manifests/00-namespace.yaml
-kubectl apply -f manifests/01-rbac.yaml
-kubectl apply -f manifests/02-ec2nodeclass.yaml
-kubectl apply -f manifests/03-nodepool.yaml
-kubectl apply -f manifests/04-warm-capacity.yaml
-kubectl apply -f manifests/05-source-pv.yaml
-kubectl apply -f manifests/06-source-pvc.yaml
-kubectl apply -f manifests/07-sync-agent-daemonset.yaml
-kubectl apply -f manifests/08-path-shim.yaml
+RELEASE=node-local-data
+RELEASE_NAMESPACE=default
+CHART=charts/node-local-data
+VALUES=my-values.yaml
 ```
 
-Two of these steps take several minutes to complete:
-
-**After `04-warm-capacity.yaml`**, confirm nodes appear. The placeholder
-Deployment is what causes Karpenter to launch them; without it the pool sits at
-zero.
-
-**Before `09-local-pv.yaml`**, wait for the agent to complete a first pass on
-every node. The volume's path must already exist on the node:
+Before rendering or installing, check whether the workload namespace already
+exists:
 
 ```bash
-kubectl logs -n geodata-sync -l app=geodata-sync-agent -f
-kubectl apply -f manifests/09-local-pv.yaml
-kubectl get pv geodata-local-pv
+kubectl get namespace geodata-sync
 ```
 
-It must read `Available` before you proceed with the remaining steps.
+On a new cluster, leave the default `namespace.create: true`; Helm creates and
+owns `geodata-sync`. If the namespace already exists and is not owned by this
+Helm release, do **not** add Helm ownership labels or annotations merely to make
+the install pass. Configure it as externally managed in `my-values.yaml`:
 
-Once the previous steps are complete, you will have a separated, dedicate node 
-pool called `geodata-nodes` and your data will have been copied from the NFS 
-share onto each node at /mnt/geodata/active. Your nodes will be tainted with 
-`__LABEL_DOMAIN__/dedicated: geocoding-and-routing`. If the data synced 
-successfully, the data-not-ready taint should no longer apply to those nodes.
+```yaml
+namespace:
+  create: false
+  name: geodata-sync
+```
 
-All nodes in the default node pool will also now have an empty directory 
-at /mnt/geodata/active.
+All namespaced chart resources still render into `namespace.name`, but Helm does
+not try to create, adopt, or delete that Namespace. This avoids the `invalid
+ownership metadata` installation error and prevents a later uninstall from
+deleting a pre-existing namespace and unrelated resources in it. If
+`namespace.name` does not exist while `namespace.create` is `false`, create it
+explicitly before installation.
 
-The remaining steps are ArcGIS-specific.
+Review the render and install it:
 
-## Registering the data stores
+```bash
+helm lint --strict "$CHART" -f "$VALUES"
+helm template "$RELEASE" "$CHART" --namespace "$RELEASE_NAMESPACE" -f "$VALUES" > rendered-install.yaml
+helm install "$RELEASE" "$CHART" --namespace "$RELEASE_NAMESPACE" -f "$VALUES"
+helm get notes "$RELEASE" --namespace "$RELEASE_NAMESPACE"
+```
 
-First, we need to tell ArcGIS Enterprise where the data resides by registering
-the location as a folder data store. The process is different for geocoding locators and 
-network datasets:
+Watch the agent and inspect readiness labels. The label-domain example below
+uses `data.example.com`; replace it with the configured domain, escaping dots
+in the `custom-columns` JSONPath but not in the label selector:
 
-**Geocoding** uses a local PersistentVolume, registered through ArcGIS Enterprise
-Manager. Form values are listed at the top of `manifests/09-local-pv.yaml` 
-and must agree with the volume spec.
+```bash
+kubectl logs -n geodata-sync daemonset/geodata-sync-agent -f
+kubectl get nodes -l data.example.com/workload=geodata \
+  -o custom-columns='NAME:.metadata.name,GEN:.metadata.labels.data\.example\.com/dataset-generation,COUNT:.metadata.labels.data\.example\.com/dataset-count,TAINTS:.spec.taints[*].key'
+kubectl exec -n geodata-sync daemonset/geodata-sync-agent -- \
+  python -c 'import os,sys; sys.exit(0 if any(os.scandir("/mnt/geodata")) else 1)'
+```
 
-**Routing** for ArcGIS Enterprise on Kubernetes 12.0 12.1 uses a hostPath
-folder data store, which Enterprise Manager cannot create. Register it
-through the Admin REST API, with the shim DaemonSet Ready first. The call 
-and its arguments are documented at the top of `manifests/08-path-shim.yaml`.
+Do not publish an ArcGIS service against the mirror until every intended
+dedicated node has completed its first sync, reports dataset labels, and no
+longer has the data-not-ready taint. A hostPath folder data store resolves to an
+empty directory on a node that has no data yet, so publishing early fails at
+query time rather than at mount time.
 
-Registering the hostPath store is not a scoped operation. ArcGIS adds the mount
-to service Deployments organisation-wide, so every node that may run any ArcGIS
-service pod must have the path present. Read [tuning/gotchas.md](tuning/gotchas.md) 
-before you register.
+## Register the ArcGIS data store
 
-## Rescheduling the publishing tool pods
+Use `helm get notes` after each install or upgrade to obtain the release-specific
+names, placement values, and exact `datasetRoot`.
 
-At this point, publishing a service that relies on data residing on the dedicated
-routing and geocoding nodes will still fail because the ArcGIS Enterprise PublishingTools
-system service will validate that it can access the required data before publishing
-a service, and all system services run on the default node group instead. As a result, 
-we need to make sure the pods hosting the PublishingTools system service runs always on the 
-dedidcated node group. You can do this by applying node affinity
-and tolerations to the service in ArcGIS Enterprise Manager. Doing so will automatically 
-reschedule any PublishingTools pods on the routing and geocoding nodes.
+### One shared hostPath folder data store
 
-## Setting the default placement properties for Map and GP services
+When `pathShim.enabled` is true and its DaemonSet is Ready, register the exact
+hostPath `/mnt/geodata` through the ArcGIS Admin REST API, and use that **one**
+registration for both routing and geocoding. There is no separate geocoding
+registration and no PersistentVolume to register.
 
-ArcGIS Enterprise on Kubernetes does not currently support specifying node placement properties
-for a service when publishing the service. They can only be set after a service has been published.
-Consequently, pods hosting geocoding and routing services that rely on node-local data will be 
-scheduled to run on the default node group because they do not specify the node affinity and tolerations
-required to run on the geocoding and routing node group.
+A hostPath folder data store cannot be registered from ArcGIS Enterprise
+Manager, which offers PV-based registration only. Use the Admin REST API and
+pass `allowServicesRestart`, because the call restarts service pods. Wait for the
+Path Shim DaemonSet to be Ready before registering.
 
-For most types of services, that's not a big problem as the service will publish but fail to start
-because its data is missing on the default node group's nodes. The fix is to set the placement properties 
-for that service in ArcGIS Enterprise Manager after publishing and to start the service. 
+HostPath registration is organization-wide: ArcGIS may add the mount to service
+Deployments on any node, which is why the Path Shim creates the same path outside
+the dedicated pool. Read [tuning/gotchas.md](tuning/gotchas.md) before
+registration.
 
-For routing services that are published via the 
-[enterprise portal](https://doc.esri.com/en/arcgis-enterprise/latest/administer/configure-routing-services.html?pivots=os-windows#6F5)
-or through the 
-[Publish Routing Services](https://developers.arcgis.com/rest/services-reference/enterprise/publish-routing-services/)
-server tool, this process will fail to publish altogether and requires an additional workaround.
+A hostPath folder data store is never SELinux-relabeled, so both workloads read
+the same tree without changing what the other sees on disk. That is the whole
+reason geocoding is served this way; see
+[Why the mirror must not be relabeled](#why-the-mirror-must-not-be-relabeled).
 
-That workaround is to edit the default placement properties for the MapServer, GPServer 
-and GPServerSync server types that use the ArcObjects11 provider. This has to be performed
-using the ArcGIS Enterprise Admin REST API by editing the System > Deployment >
+### What the single-hostPath model gives up
+
+Two things, both accepted deliberately:
+
+**Registration moves from Enterprise Manager to the Admin REST API.** A
+PersistentVolume-based data store can be registered in Enterprise Manager with a
+StorageClass, access mode, and capacity. A hostPath store is registered through
+the Admin REST API and its mount scope is organization-wide rather than scoped to
+one claim. Routing has been registered this way from the start, so geocoding
+joining it is not a new exposure — it is the exposure that already existed, now
+covering one more service.
+
+**The failure mode when data is missing gets quieter.** A `local` volume fails
+loudly: a pod scheduled onto a node without the data never starts, and
+`MountVolume.SetUp` says so. A hostPath store on the same node mounts an empty
+directory and fails later, at query time, with a less obvious error. This is the
+trade the Path Shim already makes for routing. It is why the first-sync gate
+above and the node affinity in
+[Place ArcGIS workloads](#place-arcgis-workloads) still matter: they are what
+keeps a consumer off a node that holds no mirror.
+
+## Place ArcGIS workloads
+
+Use the chart's permanent dedicated-node placement for services that must read
+the mirrored data. For a `labelDomain` of `data.example.com`, the placement
+values are:
+
+```yaml
+tolerations:
+  - key: data.example.com/dedicated
+    operator: Equal
+    value: geodata
+    effect: NoSchedule
+nodeAffinity:
+  requiredDuringSchedulingIgnoredDuringExecution:
+    nodeSelectorTerms:
+      - matchExpressions:
+          - key: data.example.com/workload
+            operator: In
+            values:
+              - geodata
+```
+
+If warm capacity is disabled, the first ArcGIS workload waits for Karpenter to
+provision a node and for that node's first mirror sync to finish.
+
+PublishingTools validates registered data while publishing. Configure its pod
+placement policy in ArcGIS Enterprise Manager so it uses the dedicated
+`geodata` nodes and the toleration and affinity shown above.
+
+ArcGIS Enterprise on Kubernetes does not currently accept placement properties
+for every service during publication. Configure the default deployment
+properties for MapServer, GPServer, and GPServerSync services using the
+ArcObjects11 provider, or set placement immediately after publishing where the
+workflow permits. Routing publication can fail before that later adjustment, so
+configure its default placement before publishing.
+
+See the ArcGIS Enterprise Admin REST API documentation for
 [Default Deployment Properties](https://developers.arcgis.com/rest/enterprise-administration/enterprise/deployment-default-properties/).
 
-The API documentation has an example of how to configure pod placement properties. Here's an example of how to insert a pod placement
-policy into the default deployment properties for the MapServer/ArcObjects11 type and provider. Note that `__LABEL_DOMAIN__  is a placeholder
-to be replace with your specific configuration value, e.g., `geodata.example.com`.
+## Verify the deployment
 
-```json
-{
-  "mode": "Dedicated",
-  "provider": "ArcObjects11",
-  "id": "<id>",
-  "type": "MapServer",
-  "spec": {
-    "replicas": {
-      "min": 1,
-      "max": 1,
-      "scalingMode": "manual"
-    },
-    "podPlacementPolicy": {
-      "tolerations": [{
-        "effect": "NoSchedule",
-        "value": "geocoding-and-routing",
-        "key": "__LABEL_DOMAIN__/dedicated",
-        "operator": "Equal"
-      }],
-      "nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": [{"matchExpressions": [{
-        "values": ["geocoding-and-routing"],
-        "key": "__LABEL_DOMAIN__/workload",
-        "operator": "In"
-      }]}]}}
-    },
-    "containers": [
-      {
-        "name": "main-container",
-        "resources": {
-          "memoryMin": "500Mi",
-          "memoryMax": "2Gi",
-          "cpuMin": "0.125",
-          "customResources": {},
-          "cpuMax": "2"
-        },
-        "containerImageKey": "MAP_SERVER"
-      },
-      {
-        "name": "fluent-bit",
-        "resources": {
-          "memoryMin": "32Mi",
-          "memoryMax": "150Mi",
-          "cpuMin": "0.05",
-          "customResources": {},
-          "cpuMax": "0.25"
-        },
-        "containerImageKey": "FLUENT_BIT"
-      }
-    ]
-  },
-  "revision": <revision>
-}
-
-```
-
-Repeat this for GPServer and GPServerSync types that use the ArcObjects11 provider as well. 
-
-## Verifying
-
-Confirm the dataset is on the instance store rather than on EBS. Check from a
-pod that mounts the path; `kubectl debug node/...` has its own mount namespace
-and will report the wrong filesystem.
-
-THE POD MUST BE ONE RUNNING ON A NODE IN THE POOL, which is why this does not
-address `ds/geodata-path-shim`. `kubectl exec ds/<name>` picks an arbitrary pod
-from the set, and the shim runs on every node in the cluster on purpose, so it
-usually lands on a node that holds no data and reports that node's EBS volume.
-That is the same wrong answer as `kubectl debug node/...`, arrived at a
-different way. Use the sync agent instead, which only ever schedules onto nodes
-carrying the pool label:
+Check from the sync-agent pod, which only schedules on the dedicated pool. The
+exact mirror path is `/mnt/geodata` inside both the container and host mount:
 
 ```bash
-kubectl exec -n geodata-sync ds/geodata-sync-agent -- df -hT /mnt/data
+kubectl exec -n geodata-sync daemonset/geodata-sync-agent -- df -hT /mnt/geodata
 ```
 
-The agent mounts the same host path at `/mnt/data` rather than at
-`/mnt/geodata`; see the volumeMounts in `07-sync-agent-daemonset.yaml`. Expect
-an instance-store device, and an `md` array where the instance type carries more
-than one NVMe disk:
+Expect an instance-store device, often an `md` array when the instance type has
+multiple NVMe disks. A filesystem matching the Bottlerocket data-volume size
+instead indicates that the EC2 bind did not place `/mnt/geodata` on instance
+storage.
 
-```
-Filesystem     Type  Size  Used Avail Use% Mounted on
-/dev/md127     xfs   2.6T  556G  2.1T  21% /mnt/data
-```
-
-A size matching the EBS data volume in `02-ec2nodeclass.yaml`, 300G, means the
-bind did not happen and the dataset went to the wrong device.
-
-Separately, confirm the shim did its job on a node OUTSIDE the pool, since that
-is what makes a hostPath data store mountable organisation-wide. The path should
-exist, be empty, and sit on that node's EBS volume:
+Check the Path Shim on a node outside the dedicated pool. The exact path should
+exist and normally be empty there:
 
 ```bash
-NODE=$(kubectl get nodes -l '__LABEL_DOMAIN__/workload!=geodata' \
-  -o jsonpath='{.items[0].metadata.name}')
-POD=$(kubectl get pods -n geodata-sync -l app=geodata-path-shim \
-  --field-selector spec.nodeName=$NODE -o jsonpath='{.items[0].metadata.name}')
+NODE=$(kubectl get nodes -l 'data.example.com/workload!=geodata' -o jsonpath='{.items[0].metadata.name}')
+POD=$(kubectl get pods -n geodata-sync -l app=geodata-path-shim --field-selector spec.nodeName="$NODE" -o jsonpath='{.items[0].metadata.name}')
 kubectl exec -n geodata-sync "$POD" -c keep-path -- df -hT /mnt/geodata
+kubectl exec -n geodata-sync "$POD" -c keep-path -- sh -c 'test -z "$(find /mnt/geodata -mindepth 1 -maxdepth 1 -print -quit)"'
 ```
 
-Confirm every node in the pool holds the same generation before publishing a
-service against it.
+Replace `data.example.com` with the configured label domain. Confirm every
+dedicated node has the expected dataset labels and only the permanent dedicated
+taint before publishing dependent services.
 
-ESCAPE THE DOTS in the label key on the `custom-columns` side. That argument is
-JSONPath, where an unescaped dot is a field separator, so a domain-qualified key
-substituted in as-is silently resolves to nothing and every row reads `<none>`.
-The `-l` selector needs no escaping, only the JSONPath does:
+## Why the mirror must not be relabeled
+
+**One directory, one mount type, and the tree stays category-free.** Bottlerocket
+runs SELinux enforcing and gives each pod sandbox a random MCS category pair. An
+object that carries no categories is readable by any `container_t` process
+whatever its own categories, which is what lets every ArcGIS consumer share
+`/mnt/geodata`. A hostPath folder data store never relabels the tree; a `local`
+PersistentVolume over the same tree does, recursively and on disk, to one pod's
+categories. A healthy node reads `system_u:object_r:local_t:s0`; the node that
+was relabeled here read `system_u:object_r:data_t:s0:c20,c476` and became
+unreadable to routing, the Path Shim, and the sync agent alike. The single rule
+is therefore: nothing may mount `/mnt/geodata` in a way that relabels it. The
+chart enforces that by rendering no `local` volume, rejecting a leftover
+`localVolume` key, and guarding any future relabeling volume against the shared
+roots.
+
+**Aligning categories instead is not available.** ArcGIS pod specifications
+cannot be modified — their only `securityContext` is
+`{"supplementalGroups":[117932853]}` — and categories are assigned per pod
+sandbox, not per service: two pods of the one ReplicaSet
+`arcgis-system-publishingtools-gpsyncserver-dgo59-b5cfc74f9` on node
+`ip-10-0-37-12` held `c372,c821` and `c388,c1019`. There is nothing to pin.
+
+**`chmod 777`, permissive mode, and privileged consumers do not help**, because
+Unix mode bits do not override an MCS mismatch. The denied directory was
+`drwxr-xr-x` root:root before, during, and after the incident, and the same 0755
+root:root mode over a category-free label read fine on every other node. The
+mode was never the variable, and relaxing enforcement cluster-wide trades a
+security control for a problem that has a configuration answer.
+
+The mechanism behind all of this — the two conditions that make a volume
+relabelable, how to check them, why the NFS source is exempt, and why distinct
+paths are not the same as distinct inodes — is in
+[tuning/gotchas.md](tuning/gotchas.md) under "SELinux labelling of the shared
+tree". Read it before sharing any tree with a new consumer.
+
+## Operations
+
+Six runbooks. Upgrades and node replacement are routine; the migration and
+recovery procedures are ordered sequences where the order is the point.
+
+### Upgrade safely
+
+Use the same values file for every upgrade. Review the complete render before
+applying it:
 
 ```bash
-kubectl get nodes -l __LABEL_DOMAIN__/workload=geodata \
-  -o custom-columns='NAME:.metadata.name,GEN:.metadata.labels.__LABEL_DOMAIN__/dataset-generation'
+helm lint --strict "$CHART" -f "$VALUES"
+helm upgrade "$RELEASE" "$CHART" --namespace "$RELEASE_NAMESPACE" -f "$VALUES" --dry-run > rendered-upgrade.yaml
+helm upgrade "$RELEASE" "$CHART" --namespace "$RELEASE_NAMESPACE" -f "$VALUES"
+helm get notes "$RELEASE" --namespace "$RELEASE_NAMESPACE"
 ```
 
-So with a label domain of `geodata.example.com`, the second line reads
-`.metadata.labels.geodata\.example\.com/dataset-generation`.
+Helm applies its normal three-way merge and deletes release resources disabled
+by the new values. Changes to the NodePool or EC2NodeClass, including the pinned
+AMI and instance requirements, can mark NodeClaims `Drifted`. The NodePool keeps
+`expireAfter: Never`, `consolidateAfter: Never`, `consolidationPolicy:
+WhenEmpty`, and a zero voluntary-disruption budget, so review drift and replace
+NodeClaims deliberately rather than expecting an automatic rollout.
 
-Confirm that routing and geocoding pods can be scheduled on the nodes. 
-Only the permanent taint should remain:
+#### Before disabling the Path Shim
+
+Before changing `pathShim.enabled` from `true` to `false`, deregister the shared
+hostPath data store `/mnt/geodata` in ArcGIS and stop workloads that use it.
+Only then review and run `helm upgrade`. Disabling the DaemonSet does not delete
+node filesystem content, but it removes the component that guarantees the path
+exists on every eligible node.
+
+### Upgrading from a release that had the local volume
+
+Chart 0.2.0 removes the `geodata-local-sc` StorageClass, the `geodata-local-pv`
+PersistentVolume, and the `localVolume` value. Upgrading from an earlier release
+deletes those two objects and changes nothing else. Before the upgrade:
+
+1. Deregister the geocoding local-PV data store in ArcGIS Enterprise, and
+   register geocoding against the shared hostPath store instead.
+2. Delete the ArcGIS-owned claim bound to `geodata-local-pv` and verify it is
+   gone. **Deleting a PV that still has a live claim leaves the claim unbound
+   and surfaces only as a binding timeout**, which is why this order matters.
+3. Remove the `localVolume` block from your values file. It is not merely
+   ignored: rendering fails with an explanation if the key is still present.
+   Pass `-f "$VALUES"` and not `--reuse-values`, or the old keys are fed back in
+   and trip that rejection.
+4. Run the upgrade, then confirm the PV is actually absent. A `Released` PV with
+   a stale `claimRef` never rebinds and `helm upgrade` does not reconcile it, so
+   delete it explicitly if it survived. `reclaimPolicy: Retain` means deleting
+   the object touches no node filesystem content and the mirror is untouched.
 
 ```bash
-kubectl get nodes -l __LABEL_DOMAIN__/workload=geodata \
-  -o custom-columns='NAME:.metadata.name,TAINTS:.spec.taints[*].key'
+kubectl get pv geodata-local-pv -o jsonpath='{.status.phase}{"\n"}' 2>/dev/null || echo absent
+kubectl delete pv geodata-local-pv     # only if it is still present after the upgrade
 ```
 
-## Replacing a node
+Do not roll this upgrade back automatically. Helm's rollback recreates
+`geodata-local-pv` and `geodata-local-sc`, which reinstates the only object in
+the chart able to relabel the shared tree.
 
-Nodes in this pool are never replaced automatically. The disruption budget is
-zero and expiry is disabled, so an AMI or configuration change marks nodes
-Drifted and leaves them running. Replacement is deliberate:
+### Replace the source PersistentVolume
+
+`geodata-source-pv` is a static PV — the only one the chart renders. Kubernetes
+can reject in-place changes to immutable fields, and advertised capacity changes
+are not a substitute for resizing the underlying NFS export. A replacement may be
+required when changing capacity, NFS identity, StorageClass, or other immutable
+fields.
+
+Plan a maintenance window and use this sequence:
+
+1. Deregister the ArcGIS data store if the change also moves `datasetRoot`.
+2. Ensure the old PV is unbound: stop the sync-agent DaemonSet, delete
+   `geodata-source-pvc`, and wait for the claim to disappear.
+3. Delete the old unbound `geodata-source-pv` and verify that it no longer
+   exists.
+4. Update the independent value (`nfs.capacity`, the NFS settings, or
+   `datasetRoot`) and review the rendered upgrade.
+5. Run `helm upgrade`; Helm recreates any manually removed release resources.
+6. Wait for `/mnt/geodata` to be mirrored and ready on every intended node, then
+   re-register the ArcGIS data store if its path changed.
+
+For the default source resources, the maintenance commands include:
 
 ```bash
-kubectl get nodeclaim -l karpenter.sh/nodepool=geodata-nodes \
+kubectl delete daemonset geodata-sync-agent --namespace geodata-sync
+kubectl delete persistentvolumeclaim geodata-source-pvc --namespace geodata-sync
+kubectl wait --for=delete persistentvolumeclaim/geodata-source-pvc --namespace geodata-sync --timeout=5m
+kubectl delete persistentvolume geodata-source-pv
+kubectl wait --for=delete persistentvolume/geodata-source-pv --timeout=5m
+helm upgrade "$RELEASE" "$CHART" --namespace "$RELEASE_NAMESPACE" -f "$VALUES"
+```
+
+Adjust names when `namePrefix` or `namespace.name` differs. Deleting the source
+PV object does not delete the authoritative NFS export. Do not delete or resize
+the source export as part of this chart procedure.
+
+### Replace a node
+
+Nodes in this pool are not voluntarily replaced by the chart's disruption
+settings. Inspect drift before replacement:
+
+```bash
+kubectl get nodeclaims -l karpenter.sh/nodepool=geodata-nodes \
   -o custom-columns=NAME:.metadata.name,DRIFTED:'.status.conditions[?(@.type=="Drifted")].status'
 ```
 
-Replace one node at a time. Cordon it, let its workload move, then delete its
-NodeClaim. If you cordon the whole pool at once, Karpenter will provision one or more
-additional nodes. Expect a full sync on the replacement before it accepts
-service pods.
+Replace one node at a time. Cordon it, relocate its workload, then delete its
+NodeClaim. If the whole pool is cordoned together, Karpenter may provision
+additional nodes up to the explicit limits. A replacement node does not accept
+`geodata` service pods until its first mirror sync into `/mnt/geodata` succeeds.
+
+Node replacement is also the recovery procedure when a node's mirror becomes
+unreadable, which is the next runbook.
+
+### Recover a node whose mirror is unreadable
+
+Symptoms: routing map services on one node return readiness 503 and their
+Deployments pass the progress deadline; the Path Shim cannot `ls` or `mkdir` its
+path; the sync agent is in `CrashLoopBackOff` with
+`lstat /mnt/geodata/<dataset>: permission denied` or `PermissionError: [Errno 13]`
+— all against a directory that is still `drwxr-xr-x` root:root. Confirm by
+reading the label from the Path Shim pod on that node:
+
+```bash
+NODE=ip-10-0-37-101   # the affected node
+POD=$(kubectl get pods -n geodata-sync -l app=geodata-path-shim --field-selector spec.nodeName="$NODE" -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n geodata-sync "$POD" -c keep-path -- ls -ldZ /mnt/geodata
+```
+
+A healthy node reads `system_u:object_r:local_t:s0`. The affected node here read
+`system_u:object_r:data_t:s0:c20,c476` — the MCS categories of one pod sandbox,
+and a different SELinux type as well.
+
+**Replacing the node is the procedure.** It needs no relabel permission, no
+privileged container, and no host setting change, and it works because the mirror
+is derived from an authoritative source: discarding a node's copy costs a resync,
+not data.
+
+**Prerequisite, and the order matters.** Remove whatever relabeled the tree
+before you replace anything, or the replacement is poisoned in turn. Chart 0.2.0
+onwards cannot create such a mount, so on a current release there is nothing to
+remove and you can go straight to the steps below. Coming from an earlier release,
+work through
+[Upgrading from a release that had the local volume](#upgrading-from-a-release-that-had-the-local-volume)
+first: deregister the data store, delete the ArcGIS-owned claim, then remove the
+PersistentVolume, in that order.
+
+**Removing the mount does not repair the node.** The label is written per inode on
+disk, not carried by the mount, so deregistering the data store, deleting the
+claim, and removing every referencing pod leaves the denial exactly where it was.
+Measured here: the affected node's sync agent went from **269 to 379 restarts
+across that removal**. The node does not self-heal, which is why replacement is
+not optional.
+
+With the source removed, replace the node:
+
+1. Cordon the affected node.
+2. **Relocate its ArcGIS workloads.** Cordon alone evicts nothing; without this
+   step the broken node keeps serving requests it cannot satisfy.
+3. Let the evicted warm-capacity placeholder force Karpenter to provision a
+   replacement. That eviction is the mechanism, so warm capacity has to be
+   enabled.
+4. Wait for the new node to complete its first sync and clear the
+   data-not-ready taint.
+5. Confirm the replacement: label, mirror size, published dataset generation and
+   count, taint cleared.
+6. Delete the old NodeClaim. The bad labels go with the instance store.
+
+**Blast radius: one node.** Its ArcGIS workloads move, its mirror is discarded
+and re-derived from the authoritative source, and no other node is touched.
+Nothing in this procedure deletes, moves, or re-syncs any other node's mirror.
+Discarding one node's copy is the node pool's own premise, and the documented
+behavior of any replacement here.
+
+**Budget for one full first sync.** On this cluster the replacement transferred
+`901830389268` bytes in `3533.9s` — **58.9 minutes for about 840 GiB, roughly
+255 MB/s** — while the source was concurrently serving live reads from the
+remaining node. Plan for that read as well as the elapsed time.
+
+**Confirm the label once after the first sync, not on a schedule.** New files do
+not inherit the writing process's MCS categories: the agent runs as
+`container_t:s0:c750,c987` and every file it writes is `local_t:s0` with no
+categories. A clean tree stays clean, so one post-sync confirmation is enough.
+
+#### Relabeling in place: denied on Bottlerocket 1.64.0
+
+Recorded so nobody rediscovers the denial from scratch. **This is not a runbook
+step.** `chcon -R` run from `kubectl debug node/<node> --profile=sysadmin` with an
+`amazonlinux:2023` image walked the entire tree — it could read every filename,
+which by itself shows a privileged context bypasses MCS for reads — and **every
+`setxattr` returned `Permission denied`.** Reading a labeled object and relabeling
+it are governed by different permissions (`relabelfrom` and `relabelto`), and
+Bottlerocket's policy does not grant the second to that context.
+
+Cost is not the obstacle: `df -i` reported `IUsed 174` for 840 GB, so a full
+relabel is about 174 `setxattr` calls. Permission is the obstacle.
+
+Tooling notes for anyone who tries anyway, because several of these cost time:
+
+- `chcon` is present, from coreutils.
+- `matchpathcon` and `restorecon` are **absent** — policycoreutils is not shipped
+  in that image, so "let policy decide the target label" is not available either.
+- `mount` is absent from the minimal image.
+- `id -Z` fails, because `/sys/fs/selinux` is not in the debug container's mount
+  namespace and that is what libselinux probes.
+
+If a future Bottlerocket release does grant `relabelto`, note that clearing
+categories is not sufficient: the target must be the full reference label
+captured from a healthy node, because the relabel moved the type too. Verify by
+histogram match against that node, not by absence of categories — a `data_t:s0`
+tree has no categories and is still wrong.
+
+### Uninstall safely
+
+Before uninstalling:
+
+1. Deregister the shared hostPath data store `/mnt/geodata` in ArcGIS if it was
+   registered.
+2. Stop dependent ArcGIS workloads.
+3. Only then uninstall the release.
+
+No ArcGIS-owned PersistentVolumeClaim is involved. The chart no longer renders a
+PersistentVolume that ArcGIS can claim; the only claim it owns is
+`geodata-source-pvc` for the NFS source, held by the sync agent.
+
+```bash
+helm uninstall "$RELEASE" --namespace "$RELEASE_NAMESPACE"
+```
+
+Uninstall requests deletion of every object rendered by the release, including
+NodePool, EC2NodeClass, the source StorageClass and PV, Path Shim, and
+warm-capacity resources. The source StorageClass and PV use a `Retain` reclaim
+policy, but reclaim policy governs storage reclamation after claim release; it
+does not keep the Kubernetes objects installed during `helm uninstall`.
+
+Kubernetes PV protection can leave a bound PV in `Terminating` until its
+external claim is removed. The chart has no hook or force-deletion mechanism to
+bypass that protection and never deletes ArcGIS claims on the operator's behalf.
+The chart also has no uninstall command that deletes files from the NFS export
+or node filesystems.
+
+Uninstalling the NodePool can terminate its nodes and permanently discard their
+instance-store copies under `/mnt/geodata`. The NFS export remains the
+authoritative recoverable source; a later installation must rebuild every local
+mirror.
+
+## Troubleshooting
+
+### A PV-backed data store appears at a different path inside the pod
+
+ArcGIS remaps a PersistentVolume-based folder data store. It appears in-pod at
+`/arcgis/volumes/pvc/<derived>/<registered-path>`, where `<derived>` comes from
+the CSI volume handle, and is the literal string **`noid`** when there is no CSI
+handle. So a `local` PV registered with volume path `/mnt/geodata` shows up as:
+
+```text
+/arcgis/volumes/pvc/noid/mnt/geodata
+```
+
+A hostPath folder data store is **not** remapped: it appears at the host path
+itself, `/mnt/geodata`. Looking for the host path inside a PV-backed pod, finding
+nothing, and concluding the mount is missing is a live trap — it cost real time
+during this investigation. Check `/arcgis/volumes/pvc/` before concluding
+anything about a PV-backed store.
+
+### Judging first-sync progress
+
+`du -sh` overstates progress, because rclone preallocates space for files it has
+not finished transferring. On the same tree mid-sync: `703G` of disk usage
+against `569G` apparent size. Use `--apparent-size` for the honest number, and
+look for `*.partial` files to see what is in flight:
+
+```bash
+kubectl exec -n geodata-sync daemonset/geodata-sync-agent -- \
+  du -sh --apparent-size /mnt/geodata
+kubectl exec -n geodata-sync daemonset/geodata-sync-agent -- \
+  find /mnt/geodata -name '*.partial'
+```
+
+### Node readiness labels are an inventory, not a health signal
+
+The dataset-generation and dataset-count labels hash the top-level names in
+`datasetRoot`. They are not an access check. The affected node here advertised
+the correct generation and count with no data-not-ready taint while its tree was
+completely unreadable, and every ArcGIS pod on it reported ready. When
+diagnosing, verify access as the consuming identity — read the tree from a pod —
+rather than trusting the labels.
 
 ## Not covered
 
-**Automated placement after publishing.** Service pods need the pool's node
-affinity and toleration, set in Enterprise Manager after publishing. This
-sample does not automate that.
+**Automated placement after publishing.** Service pods need the pool affinity
+and toleration configured through ArcGIS Enterprise Manager or the Admin REST
+API. This chart does not modify ArcGIS resources.
 
-**Multiple concurrent generations.** The design assumes datasets are immutable
-and added rather than modified. A new release is a new directory and a republish
-of the dependent service.
+**A tested multi-zone pool.** `nodePool.zones` accepts multiple zones, but the
+published performance results cover one zone. Cross-zone NFS access can add cost
+and latency; validate the complete design before expanding it.
 
-**A tested multi-zone pool.** Adding zones is documented in
-`manifests/03-nodepool.yaml`, including why a multi-AZ source filesystem does not
-make a second zone free. Single-zone is the arrangement that was measured; a
-multi-zone pool has not been run end to end here.
-
-**Scoping the agent's node permissions.** The agent holds a cluster-wide
-permission to patch nodes, because Kubernetes offers no way to scope node access
-to the running node. See the comment in `manifests/01-rbac.yaml` and treat it as
-a trust boundary to review.
+**Instance suitability for custom requirements.** Karpenter determines whether
+a requirement can schedule, but the operator must verify that selected instance
+types provide enough NVMe, CPU, memory, and network bandwidth for the source
+mirror and workload.
 
 ## Tuning notes
 
-- [RESULTS.md](RESULTS.md) — what was measured, on what, and what to re-measure
-- [tuning/ontap.md](tuning/ontap.md) — sizing the source filesystem, and why
-  IOPS rather than throughput sets the ceiling
-- [tuning/nvme.md](tuning/nvme.md) — binding instance-store NVMe on Bottlerocket
-- [tuning/rclone.md](tuning/rclone.md) — copy engine settings, and three flags
-  that carry correctness
-- [tuning/gotchas.md](tuning/gotchas.md) — traps worth knowing before you hit
-  them
+- [RESULTS.md](RESULTS.md) — what was measured, where, and what to re-measure
+- [tuning/ontap.md](tuning/ontap.md) — source filesystem sizing and IOPS
+- [tuning/nvme.md](tuning/nvme.md) — Bottlerocket instance-store binding
+- [tuning/rclone.md](tuning/rclone.md) — sync engine behavior and tuning
+- [tuning/gotchas.md](tuning/gotchas.md) — operational traps
 
 ## Official documentation
 
-- ArcGIS Enterprise on Kubernetes folder data stores:
-  <https://enterprise-k8s.arcgis.com/en/latest/administer/system-managed-data-stores.htm>
-- Karpenter: <https://karpenter.sh>
-- Bottlerocket ephemeral storage:
-  <https://bottlerocket.dev/en/os/latest/api/settings/bootstrap-containers/>
+- [ArcGIS Enterprise on Kubernetes folder data stores](https://enterprise-k8s.arcgis.com/en/latest/administer/system-managed-data-stores.htm)
+- [Karpenter](https://karpenter.sh)
+- [Bottlerocket ephemeral storage](https://bottlerocket.dev/en/os/latest/api/settings/bootstrap-containers/)
 
 ## Licensing
 

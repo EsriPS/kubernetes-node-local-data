@@ -31,6 +31,43 @@ Two nodes reading the same dataset finished in the same time as one node alone.
 The filesystem coalesced the two read streams rather than dividing its capacity
 between them. That holds only for nodes reading identical data.
 
+### The conditions behind the ~4.5 min figure
+
+The headline number is a benchmark result, not a service level. It was taken on a
+dedicated test cluster with the source filesystem provisioned at 16,000 IOPS and
+serving nothing else — no live query workload, no other node syncing, no
+concurrent publication — against ~500 GB in ~100 files whose size distribution
+was dominated by one very large geodatabase that parallelises well across
+multi-thread streams. Both nodes were reading identical data, page caches had been
+dropped, and the run was started by hand rather than landing on a node that was
+also being brought into service. Change any of those and the figure moves.
+
+### A counter-measurement from a real first sync
+
+The same configuration, on a replacement node brought up in the live environment:
+
+```
+Pass complete: ... 901830389268 bytes transferred, 901830740761 bytes on disk, 3533.9s total
+```
+
+That is **58.9 minutes for ~840 GiB, about 255 MB/s** — roughly a seventh of the
+benchmark rate. The differences were the conditions, not the software:
+
+- the FSx source was concurrently serving live reads from a second node, so the
+  read-stream coalescing that made two test nodes free did not apply;
+- the payload was dominated by 18–35 GB locator archives rather than one very
+  large geodatabase, so per-file concurrency carried more of the work than
+  multi-thread streams within a file; and
+- the node was being brought into service at the same time, alongside ordinary
+  cluster activity.
+
+**Both numbers are real.** Neither supersedes the other, and the difference
+between them is entirely the conditions each was taken under. Plan node
+replacement and first-sync windows against the hour-scale figure, not against the
+benchmark: the table above says roughly 500 GB in about five minutes, and that is
+what the hardware can do when nothing else is competing for the source, not what a
+first sync will take on a busy filesystem.
+
 ## What set the ceiling, in order of discovery
 
 **Not the network, though with less room to spare than the other two.** The
@@ -88,9 +125,22 @@ transfers x streams.
   staging time. The reason to stage data locally is the read path, which depends
   on your services and your query mix.
 
-## Validation status of these manifests
+## Historical raw-manifest validation
 
-The configuration in `manifests/` is the tested configuration with names and
-environment-specific values replaced by placeholders. It was validated by
-rendering the placeholders and running a server-side dry run. The renamed set
-has not itself been run end to end.
+The raw configuration formerly maintained under `manifests/` was the tested
+configuration, with names and environment-specific values replaced by
+placeholders. It was validated by rendering those placeholders and running a
+server-side dry run; the renamed set was not itself run end to end. That
+validation is historical: it no longer validates the maintained deployment
+source and does not establish the status of the migrated implementation.
+
+## Current implementation validation status
+
+The Helm chart and documented example values are now the maintained deployment
+source, and the sync agent now mirrors the ONTAP source directly into
+`datasetRoot`. Their validation is tracked separately through the current chart
+render checks, direct-mirror sync-agent tests, required real-rclone integration
+scenarios, strict Helm lint, and placeholder check. The performance measurements
+in this document were collected only under the historical test conditions above;
+they have not been repeated as qualification of the Helm chart or direct-mirror
+sync-agent implementation and must be re-measured in each target environment.
