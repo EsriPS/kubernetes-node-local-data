@@ -27,10 +27,17 @@ spec:
       nodeSelector:
         {{- include "node-local-data.workloadSelector" . | nindent 8 }}
       # The agent must schedule before the first mirror is ready because it
-      # removes the startup taint after a successful pass.
+      # removes the startup taint after a successful pass. It must also schedule
+      # onto a node it has itself marked unreadable: the agent is what applies
+      # that taint, what clears it if the root becomes readable again, and the
+      # only thing reporting the condition at all. An untolerated key here would
+      # mean a restarted pod never lands and the node goes silent again.
       tolerations:
         - key: {{ include "node-local-data.dataNotReadyTaintKey" . }}
           value: "true"
+          effect: NoSchedule
+        - key: {{ include "node-local-data.dataUnreadableTaintKey" . }}
+          operator: Exists
           effect: NoSchedule
         - key: {{ include "node-local-data.dedicatedTaintKey" . }}
           value: {{ .Values.workloadValue | quote }}
@@ -67,7 +74,7 @@ spec:
               mountPath: /mnt/source
               readOnly: true
             - name: node-local-data
-              mountPath: {{ include "node-local-data.datasetRoot" . }}
+              mountPath: {{ include "node-local-data.datasetRoot" . | quote }}
           resources:
             requests:
               cpu: 10m
@@ -82,5 +89,5 @@ spec:
         - name: node-local-data
           hostPath:
             # This is the direct mirror destination, not a staging parent.
-            path: {{ include "node-local-data.datasetRoot" . }}
+            path: {{ include "node-local-data.datasetRoot" . | quote }}
             type: DirectoryOrCreate

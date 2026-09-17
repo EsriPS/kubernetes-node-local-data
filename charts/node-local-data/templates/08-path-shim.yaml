@@ -21,7 +21,13 @@ spec:
         {{- include "node-local-data.commonLabels" . | nindent 8 }}
     spec:
       # Run on every node, including dedicated nodes that are still completing
-      # their first sync, so ArcGIS hostPath mounts remain schedulable.
+      # their first sync, so ArcGIS hostPath mounts remain schedulable. The
+      # unreadable taint is tolerated for the same reason: ArcGIS adds a hostPath
+      # volume for datasetRoot to service Deployments organisation-wide, and
+      # hostPath.type Directory is a hard MountVolume.SetUp failure when the path
+      # is missing. A node whose tree is unreadable must still present the path,
+      # or the failure spreads from "geocoding is denied on one node" to "every
+      # ArcGIS pod that lands there cannot start".
       tolerations:
         - key: {{ include "node-local-data.dedicatedTaintKey" . }}
           operator: Equal
@@ -30,6 +36,9 @@ spec:
         - key: {{ include "node-local-data.dataNotReadyTaintKey" . }}
           operator: Equal
           value: "true"
+          effect: NoSchedule
+        - key: {{ include "node-local-data.dataUnreadableTaintKey" . }}
+          operator: Exists
           effect: NoSchedule
       priorityClassName: system-node-critical
       terminationGracePeriodSeconds: 5

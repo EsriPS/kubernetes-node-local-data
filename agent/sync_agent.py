@@ -88,6 +88,18 @@ _shutdown = threading.Event()
 LABEL_DOMAIN = os.environ.get("LABEL_DOMAIN", "geodata.example.com")
 
 BOOTSTRAP_TAINT = f"{LABEL_DOMAIN}/data-not-ready"
+
+# Applied when datasetRoot exists but cannot be read, which on Bottlerocket
+# means the tree was SELinux-relabeled by a relabeling volume and is permanently
+# denied to this agent and to every other consumer on the node. The value names
+# the remedy because that is what the operator sees in `kubectl describe node`,
+# and node replacement is the only remedy: chcon is denied to a sysadmin debug
+# container and restorecon is not present. Distinct from BOOTSTRAP_TAINT so that
+# "unreadable" is never confused with "genuinely empty" -- those need opposite
+# responses, and only this one means the node has to go.
+UNREADABLE_TAINT = f"{LABEL_DOMAIN}/data-unreadable"
+UNREADABLE_TAINT_VALUE = "replace-node"
+
 GENERATION_LABEL = f"{LABEL_DOMAIN}/dataset-generation"
 DATASET_COUNT_LABEL = f"{LABEL_DOMAIN}/dataset-count"
 
@@ -262,6 +274,10 @@ def sync_pass(source: Path, dest_root: Path,
         "rclone", "sync", source_root, destination_root,
         # Preserve ownership and mode as the previous rsync -a deployment did.
         "--metadata",
+        # Verifying re-reads both sides, roughly 2x cost, and the default
+        # size-and-modification-time comparison is what the publication
+        # procedure is required to move anyway. See ../tuning/rclone.md.
+        "--ignore-checksum",
         f"--transfers={transfers}",
         f"--multi-thread-streams={streams}",
         "--multi-thread-cutoff=256M",
@@ -347,6 +363,63 @@ def apply_bootstrap_taint(node: str) -> bool:
     return True
 
 
+def apply_unreadable_taint(node: str) -> bool:
+    """
+    Mark the node as holding a mirror nobody can read. --overwrite is idempotent.
+
+    This exists because the alternative is silence. An unreadable datasetRoot
+    must not rewrite the generation and count labels -- they still describe a
+    complete mirror, and rewriting them to "none" would be a lie in the other
+    direction -- so without a taint the node keeps advertising correct readiness
+    while every consumer on it is denied. That is the failure mode this whole
+    change set exists to remove, and it is exactly what the incident looked like:
+    correct generation, correct count, no taint, every pod reporting ready, tree
+    entirely unreadable.
+
+    NoSchedule rather than NoExecute. Pods already running on the node are
+    serving errors against a tree they cannot read, so evicting them is
+    defensible, but a blocking PodDisruptionBudget plus the required node
+    affinity these consumers carry can deadlock the eviction with nowhere for the
+    replicas to land. Gating new pods is the safe half; draining the node is an
+    operator decision, and the runbook in ../README.md covers it.
+    """
+    result = run(
+        ["kubectl", "taint", "node", node,
+         f"{UNREADABLE_TAINT}={UNREADABLE_TAINT_VALUE}:NoSchedule", "--overwrite"],
+        check=False,
+    )
+    if result.returncode != 0:
+        log.error("Could not apply taint %s to %s: %s",
+                  UNREADABLE_TAINT, node, (result.stderr or "").strip())
+        return False
+    log.warning("Applied taint %s=%s to node %s: datasetRoot exists but cannot be "
+                "read, so this node needs replacing.",
+                UNREADABLE_TAINT, UNREADABLE_TAINT_VALUE, node)
+    return True
+
+
+def clear_unreadable_taint(node: str) -> bool:
+    """
+    Drop the unreadable taint once the root can be read again. Idempotent.
+
+    Attempted on every readable pass rather than tracked in process state. A
+    stuck NoSchedule taint on a healthy node silently removes it from the pool,
+    which is the same class of quiet failure as the one being fixed, and process
+    state cannot survive the restart that would strand it. One kubectl call per
+    interval is not worth optimizing against that.
+    """
+    result = run(["kubectl", "taint", "node", node, f"{UNREADABLE_TAINT}-"], check=False)
+    stderr = (result.stderr or "").strip()
+    if result.returncode == 0:
+        log.info("Cleared taint %s from node %s: datasetRoot is readable again",
+                 UNREADABLE_TAINT, node)
+        return True
+    if "not found" in stderr.lower():
+        return True
+    log.error("Could not clear taint %s from %s: %s", UNREADABLE_TAINT, node, stderr)
+    return False
+
+
 def read_node_labels(node: str) -> dict | None:
     """
     Current labels on the node, or None if they cannot be read.
@@ -415,23 +488,34 @@ def reconcile_node_state(node: str, ok: bool, datasets: list[str] | None,
     Reconcile readiness with the top-level dataset names in ``datasetRoot``.
 
     ``datasets`` carries three outcomes and each gets its own treatment. None
-    means the root could not be read, so the inventory is unknown and node state
-    is left exactly as it is -- a complete but unreadable mirror must not be
-    re-tainted and must not have its generation label rewritten to "none". An
-    empty list means the node genuinely holds no datasets and legitimately
-    re-applies the startup taint, even after a failed pass, so a node with no
-    mirror cannot accept new consumers. Names present with a successful pass
-    updates the generation/count labels and opens the startup gate; the
-    generation is an identity of top-level names, not a checksum of file
-    contents. A failed pass that still has data leaves labels and taint
-    unchanged because completed per-file changes may represent only part of the
-    source tree.
+    means the root could not be read, so the inventory is unknown: the generation
+    and count labels are left exactly as they are, because they still describe a
+    mirror that is complete on disk, and the node is marked with
+    ``UNREADABLE_TAINT`` instead. An empty list means the node genuinely holds no
+    datasets and legitimately re-applies the startup taint, even after a failed
+    pass, so a node with no mirror cannot accept new consumers. Names present
+    with a successful pass updates the generation/count labels and opens the
+    startup gate; the generation is an identity of top-level names, not a
+    checksum of file contents. A failed pass that still has data leaves labels
+    and taint unchanged because completed per-file changes may represent only
+    part of the source tree.
+
+    ``BOOTSTRAP_TAINT`` and ``UNREADABLE_TAINT`` answer different questions and
+    are never applied together. The first means "no data yet, wait"; the second
+    means "data present, nobody can read it, replace the node". The clear of the
+    second runs once ahead of all three readable branches, including the failed
+    pass, because reaching any of them proves the root could be enumerated. That
+    is what stops a transient denial from stranding a healthy node under a
+    NoSchedule taint. Where the branch docstrings above say the taint is left
+    unchanged, they mean ``BOOTSTRAP_TAINT``.
     """
     if datasets is None:
-        log.warning("Dataset root is unreadable; leaving the %s taint and the "
-                    "generation and count labels on node %s unchanged.",
-                    BOOTSTRAP_TAINT, node)
+        log.warning("Dataset root is unreadable; leaving the generation and count "
+                    "labels on node %s unchanged and marking it unreadable.", node)
+        apply_unreadable_taint(node)
         return taint_removed
+
+    clear_unreadable_taint(node)
 
     if not datasets:
         if apply_bootstrap_taint(node):

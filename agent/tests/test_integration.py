@@ -141,6 +141,7 @@ def test_pass_runs_exactly_one_recursive_source_root_sync_without_inplace(
     expected = [
         "rclone", "sync", f"{source}{os.sep}", f"{dest_root}{os.sep}",
         "--metadata",
+        "--ignore-checksum",
         "--transfers=3",
         "--multi-thread-streams=2",
         "--multi-thread-cutoff=256M",

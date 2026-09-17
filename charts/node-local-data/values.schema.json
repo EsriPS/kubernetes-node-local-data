@@ -30,7 +30,12 @@
     },
     "labelDomain": { "$ref": "#/definitions/dnsSubdomain" },
     "workloadValue": { "$ref": "#/definitions/labelValue" },
-    "datasetRoot": { "type": "string", "minLength": 1 },
+    "datasetRoot": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^/mnt/[^\\s/]+(?:/[^\\s/]+)*$",
+      "description": "Absolute node-local dataset root below /mnt/, already normalized. No trailing separator, no repeated separators, and no whitespace: this value is rendered into both DaemonSet hostPaths, both mountPaths, the agent --dest-root argument, and the Bottlerocket ephemeral-storage bind argument, so a spelling that differs between those surfaces silently mirrors the data somewhere the registered path never sees. templates/_validate.tpl additionally requires the value to equal its lexically cleaned form, which rejects . and .. segments this pattern cannot express without lookahead."
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,
