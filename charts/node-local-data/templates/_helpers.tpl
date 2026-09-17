@@ -58,6 +58,20 @@ to the DNS-label limit after appending their chart-owned suffix.
 {{- printf "%s/data-not-ready" .Values.labelDomain -}}
 {{- end -}}
 
+{{/*
+Applied by the sync agent, never by this chart, when datasetRoot exists but
+cannot be read -- the signature of an SELinux relabel by a relabeling volume.
+It is deliberately absent from the NodePool startupTaints: a new node has no
+data yet, which is data-not-ready, not data-unreadable. The value the agent
+writes is "replace-node", which is why the two DaemonSets tolerate this key with
+operator Exists rather than matching that value. They must be able to reschedule
+onto an affected node whatever the value says, because if the agent cannot land
+there it stops reporting and the node goes quiet again.
+*/}}
+{{- define "node-local-data.dataUnreadableTaintKey" -}}
+{{- printf "%s/data-unreadable" .Values.labelDomain -}}
+{{- end -}}
+
 {{- define "node-local-data.datasetGenerationLabelKey" -}}
 {{- printf "%s/dataset-generation" .Values.labelDomain -}}
 {{- end -}}
@@ -83,8 +97,18 @@ app: {{ . | quote }}
 {{- printf "%s#%s#%s" .Values.nfs.server .Values.nfs.shareName (include "node-local-data.sourcePersistentVolumeName" .) -}}
 {{- end -}}
 
+{{/*
+Every rendered surface goes through this helper, and it emits the lexically
+cleaned path rather than the raw value. templates/_validate.tpl already rejects a
+denormalized datasetRoot, so this is normally a no-op; it is written this way so
+that the hostPaths, mountPaths, --dest-root, and the Bottlerocket
+ephemeral-storage bind argument cannot diverge from each other even if a future
+caller reaches a template without validation. Callers must quote it: a trailing
+space is stripped from a plain YAML scalar and preserved in a quoted one, and
+that difference alone splits one value into two directories.
+*/}}
 {{- define "node-local-data.datasetRoot" -}}
-{{- .Values.datasetRoot -}}
+{{- clean .Values.datasetRoot -}}
 {{- end -}}
 
 {{- define "node-local-data.datasetGenerationJSONPathLabelKey" -}}

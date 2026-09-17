@@ -180,6 +180,15 @@ The labels describe what top-level names were last enumerated, not whether a
 consumer can read them. Verify access as the consuming identity — read the tree
 from a pod, not from a debug container — before treating a node as healthy.
 
+**The agent reports what it cannot read, and nothing more.** A denied enumeration
+of `datasetRoot` now applies `<labelDomain>/data-unreadable=replace-node:NoSchedule`
+and deliberately leaves the generation and count labels alone, because the mirror
+is intact on disk and rewriting them to `none` would replace one wrong signal with
+another. The taint is a report of the agent's own access, though, and the agent
+holds its own MCS categories: a tree carrying exactly those categories is readable
+to it and denied to every service pod, and a denial below the top level is never
+enumerated at all. Neither case produces a taint.
+
 ## Karpenter
 
 **Automated node image rotation must be disabled for nodes holding mirrored

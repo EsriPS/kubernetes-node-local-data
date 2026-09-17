@@ -299,6 +299,16 @@ def test_an_unreadable_node_falls_back_to_writing(monkeypatch):
 _APPLY = f"{sync_agent.BOOTSTRAP_TAINT}=true:NoSchedule"
 _REMOVE = f"{sync_agent.BOOTSTRAP_TAINT}-"
 
+#: The unreadable taint is the "replace this node" signal, and it is cleared on
+#: every readable pass rather than tracked in process state -- a NoSchedule taint
+#: stranded on a healthy node is the same class of quiet failure as the one it
+#: exists to report, and process state does not survive the restart that would
+#: strand it. So a readable reconcile always opens with _CLEAR_UNREADABLE.
+_APPLY_UNREADABLE = (
+    f"{sync_agent.UNREADABLE_TAINT}={sync_agent.UNREADABLE_TAINT_VALUE}:NoSchedule"
+)
+_CLEAR_UNREADABLE = f"{sync_agent.UNREADABLE_TAINT}-"
+
 
 def test_successful_direct_sync_derives_labels_from_dataset_root_and_removes_taint(
     tmp_path, monkeypatch,
@@ -328,7 +338,7 @@ def test_successful_direct_sync_derives_labels_from_dataset_root_and_removes_tai
     assert (ok, completed) == (True, 1)
     assert datasets == expected_datasets
     assert taint_removed is True
-    assert [command[4] for command in fake.taints] == [_REMOVE]
+    assert [command[4] for command in fake.taints] == [_CLEAR_UNREADABLE, _REMOVE]
     assert len(fake.writes) == 1
     written = " ".join(fake.writes[0])
     assert (
@@ -360,8 +370,8 @@ def test_absent_or_empty_dataset_root_reasserts_the_bootstrap_taint(
 
     assert datasets == []
     assert taint_removed is False, "the gate must close so it can reopen after a resync"
-    assert [command[4] for command in fake.taints] == [_APPLY]
-    assert "--overwrite" in fake.taints[0], "re-tainting must be idempotent"
+    assert [command[4] for command in fake.taints] == [_CLEAR_UNREADABLE, _APPLY]
+    assert "--overwrite" in fake.taints[1], "re-tainting must be idempotent"
 
 
 def test_data_present_never_reasserts_the_taint(monkeypatch):
@@ -376,7 +386,12 @@ def test_data_present_never_reasserts_the_taint(monkeypatch):
     for _ in range(10):
         sync_agent.reconcile_node_state("node-a", True, datasets, taint_removed=True)
 
-    assert fake.taints == []
+    observed = [command[4] for command in fake.taints]
+    assert observed == [_CLEAR_UNREADABLE] * 10, (
+        "steady state must not rewrite the bootstrap taint; the only taint "
+        "traffic is the idempotent unreadable-taint clear"
+    )
+    assert _APPLY not in observed and _REMOVE not in observed
 
 
 def test_the_taint_is_removed_again_after_data_returns(monkeypatch):
@@ -396,7 +411,11 @@ def test_the_taint_is_removed_again_after_data_returns(monkeypatch):
     removed = sync_agent.reconcile_node_state("node-a", True, ["GEODATA2026Q2"], taint_removed=removed)
     assert removed is True
 
-    assert [c[4] for c in fake.taints] == [_REMOVE, _APPLY, _REMOVE]
+    assert [c[4] for c in fake.taints] == [
+        _CLEAR_UNREADABLE, _REMOVE,
+        _CLEAR_UNREADABLE, _APPLY,
+        _CLEAR_UNREADABLE, _REMOVE,
+    ]
 
 
 def test_empty_active_resets_the_generation_labels(monkeypatch):
@@ -427,7 +446,7 @@ def test_a_failed_pass_with_an_empty_root_reapplies_the_taint(monkeypatch):
     taint_removed = sync_agent.reconcile_node_state("node-a", False, [], taint_removed=True)
 
     assert taint_removed is False
-    assert [call[4] for call in fake.taints] == [_APPLY]
+    assert [call[4] for call in fake.taints] == [_CLEAR_UNREADABLE, _APPLY]
     assert fake.writes == []
 
 
@@ -443,18 +462,23 @@ def test_a_rejected_taint_write_does_not_reopen_the_gate(monkeypatch):
 
     assert taint_removed is True
     taint_removed = sync_agent.reconcile_node_state("node-a", True, [], taint_removed=taint_removed)
-    assert [c[4] for c in fake.taints] == [_APPLY, _APPLY], "a failed apply must be retried"
+    assert [c[4] for c in fake.taints] == [
+        _CLEAR_UNREADABLE, _APPLY, _CLEAR_UNREADABLE, _APPLY,
+    ], "a failed apply must be retried"
 
 
-def test_an_unreadable_dataset_root_leaves_the_taint_and_labels_untouched(monkeypatch):
+def test_an_unreadable_dataset_root_marks_the_node_and_leaves_the_labels(monkeypatch):
     """
-    None from list_datasets means "unknown", so node state is left exactly as
-    it is: no taint applied, no taint removed, no label written.
+    None from list_datasets means "unknown", so the labels are left exactly as
+    they are and the node is marked unreadable instead.
 
-    This is the hazard that mattered more than the crash. A node whose mirror is
-    complete but unreadable must not be tainted and must not have its generation
-    label rewritten to "none" -- that destroys correct state, and the label is
-    what publish-time checks read.
+    Two separate hazards meet here. Rewriting the generation label to "none"
+    would destroy correct state -- the mirror is complete on disk and that label
+    is what publish-time checks read -- and re-applying the bootstrap taint would
+    say "no data yet" about a node that has all of it. But leaving node state
+    entirely untouched was how the incident stayed invisible: correct generation,
+    correct count, no taint, every pod reporting ready, tree unreadable. So the
+    labels are preserved and UNREADABLE_TAINT carries the signal.
     """
     fake = _FakeRun(_labels_for(["GEODATA2026Q2"]))
     monkeypatch.setattr(sync_agent, "run", fake)
@@ -464,9 +488,49 @@ def test_an_unreadable_dataset_root_leaves_the_taint_and_labels_untouched(monkey
     )
 
     assert taint_removed is True, "an unknown inventory must not change the recorded gate state"
-    assert fake.taints == [], "unknown must neither apply nor remove the taint"
+    assert [command[4] for command in fake.taints] == [_APPLY_UNREADABLE], (
+        "an unreadable root must be reported on the node object, not only in the log"
+    )
+    assert "--overwrite" in fake.taints[0], "marking must be idempotent across passes"
     assert fake.writes == [], "unknown must not rewrite the generation or count labels"
-    assert fake.commands == [], "unknown must not touch the node object at all"
+    assert _APPLY not in [command[4] for command in fake.taints], (
+        "unreadable is not the same claim as empty and must not use the bootstrap taint"
+    )
+
+
+def test_the_unreadable_taint_names_node_replacement_as_the_remedy(monkeypatch):
+    """
+    The taint value is operator-facing text, and it is the only part of this
+    signal a human reads in `kubectl describe node`. chcon is denied on
+    Bottlerocket and restorecon is not present, so replacement is the remedy and
+    the value says so.
+    """
+    fake = _FakeRun(_labels_for(["GEODATA2026Q2"]))
+    monkeypatch.setattr(sync_agent, "run", fake)
+
+    sync_agent.reconcile_node_state("node-a", True, None, taint_removed=True)
+
+    assert fake.taints[0][4] == f"{sync_agent.UNREADABLE_TAINT}=replace-node:NoSchedule"
+    assert sync_agent.UNREADABLE_TAINT != sync_agent.BOOTSTRAP_TAINT
+
+
+def test_a_readable_root_clears_a_stale_unreadable_taint(monkeypatch):
+    """
+    The mark must not outlive the condition. A NoSchedule taint stranded on a
+    healthy node removes it from the pool as quietly as the failure this reports,
+    and the clear cannot be conditional on process state because the restart that
+    would strand it also discards that state.
+    """
+    fake = _FakeRun(_labels_for(["GEODATA2026Q2"]))
+    monkeypatch.setattr(sync_agent, "run", fake)
+
+    sync_agent.reconcile_node_state("node-a", True, None, taint_removed=True)
+    sync_agent.reconcile_node_state("node-a", True, ["GEODATA2026Q2"], taint_removed=True)
+
+    assert [command[4] for command in fake.taints] == [
+        _APPLY_UNREADABLE,
+        _CLEAR_UNREADABLE,
+    ]
 
 
 def test_an_unreadable_root_does_not_reopen_a_closed_gate(monkeypatch):
@@ -477,7 +541,8 @@ def test_an_unreadable_root_does_not_reopen_a_closed_gate(monkeypatch):
     assert sync_agent.reconcile_node_state(
         "node-a", False, None, taint_removed=False,
     ) is False
-    assert fake.commands == []
+    assert [command[4] for command in fake.taints] == [_APPLY_UNREADABLE]
+    assert fake.writes == []
 
 
 def test_an_empty_dataset_root_still_reapplies_the_taint_unlike_an_unreadable_one(monkeypatch):
@@ -489,13 +554,13 @@ def test_an_empty_dataset_root_still_reapplies_the_taint_unlike_an_unreadable_on
     empty = _FakeRun(_labels_for(["GEODATA2026Q2"]))
     monkeypatch.setattr(sync_agent, "run", empty)
     assert sync_agent.reconcile_node_state("node-a", True, [], taint_removed=True) is False
-    assert [command[4] for command in empty.taints] == [_APPLY]
+    assert [command[4] for command in empty.taints] == [_CLEAR_UNREADABLE, _APPLY]
     assert len(empty.writes) == 1
 
     unreadable = _FakeRun(_labels_for(["GEODATA2026Q2"]))
     monkeypatch.setattr(sync_agent, "run", unreadable)
     assert sync_agent.reconcile_node_state("node-a", True, None, taint_removed=True) is True
-    assert unreadable.taints == []
+    assert [command[4] for command in unreadable.taints] == [_APPLY_UNREADABLE]
     assert unreadable.writes == []
 
 

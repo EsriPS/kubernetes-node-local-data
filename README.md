@@ -387,7 +387,7 @@ reason geocoding is served this way; see
 
 ### What the single-hostPath model gives up
 
-Two things, both accepted deliberately:
+Three things, all accepted deliberately:
 
 **Registration moves from Enterprise Manager to the Admin REST API.** A
 PersistentVolume-based data store can be registered in Enterprise Manager with a
@@ -405,6 +405,16 @@ trade the Path Shim already makes for routing. It is why the first-sync gate
 above and the node affinity in
 [Place ArcGIS workloads](#place-arcgis-workloads) still matter: they are what
 keeps a consumer off a node that holds no mirror.
+
+**Whole-dataset publication atomicity is gone.** The earlier `manifests/`
+deployment staged each dataset and published it with a rename, so a service pod
+saw either a complete dataset directory or no directory at all. One shared tree
+mirrored in place cannot offer that: rclone still replaces each *file* by rename,
+never with `--inplace`, so no consumer reads a half-written file, but additions,
+replacements, and deletions become visible at different moments within a pass. A
+release that needs cross-file consistency has to drain or restart its consumers as
+part of source publication. See
+[Mirror consistency and source publication](#mirror-consistency-and-source-publication).
 
 ## Place ArcGIS workloads
 
@@ -544,8 +554,12 @@ exists on every eligible node.
 ### Upgrading from a release that had the local volume
 
 Chart 0.2.0 removes the `geodata-local-sc` StorageClass, the `geodata-local-pv`
-PersistentVolume, and the `localVolume` value. Upgrading from an earlier release
-deletes those two objects and changes nothing else. Before the upgrade:
+PersistentVolume, and the `localVolume` value. Upgrading from chart 0.1.0 deletes
+those two objects and leaves every other rendered resource alone. Coming from the
+raw `manifests/` tree instead, read
+[Migrating from the raw manifests](#migrating-from-the-raw-manifests) first: that
+path also moves the registered data-store path and rebuilds each node's mirror.
+Before the upgrade:
 
 1. Deregister the geocoding local-PV data store in ArcGIS Enterprise, and
    register geocoding against the shared hostPath store instead.
@@ -569,6 +583,58 @@ kubectl delete pv geodata-local-pv     # only if it is still present after the u
 Do not roll this upgrade back automatically. Helm's rollback recreates
 `geodata-local-pv` and `geodata-local-sc`, which reinstates the only object in
 the chart able to relabel the shared tree.
+
+### Migrating from the raw manifests
+
+Releases before the chart shipped the numbered `manifests/` tree, whose sync
+agent staged each dataset into `/mnt/geodata/staging/<dataset>` and published it
+with a rename into `/mnt/geodata/active/<dataset>`. Both the Path Shim and the
+local PV registered **`/mnt/geodata/active`**. The chart mirrors the source
+directly into `datasetRoot` and registers **`/mnt/geodata`**.
+
+Two consequences, neither of which the chart can handle for you:
+
+**The registered path changes.** A data store registered at
+`/mnt/geodata/active` keeps resolving after the upgrade — the Path Shim creates
+`datasetRoot` with `DirectoryOrCreate`, so `active/` is simply an empty
+subdirectory once the new agent has run. An empty directory mounts successfully
+and fails at query time, which is the quiet failure described in
+[What the single-hostPath model gives up](#what-the-single-hostpath-model-gives-up).
+Re-register at `/mnt/geodata` as part of this migration.
+
+**Every node re-transfers its mirror once.** The new agent runs
+`rclone sync <source>/ <datasetRoot>/`, and `sync` deletes destination paths the
+source does not have. `active/` and `staging/` are not in the source, so the
+first pass removes the old layout and re-transfers the whole tree. Budget the
+first-sync figure from [RESULTS.md](RESULTS.md): 58.9 minutes for about 840 GiB
+on this cluster, per node, with the source serving those reads.
+
+Sequence, one node pool at a time:
+
+1. Deregister the geocoding local-PV data store and the routing
+   `/mnt/geodata/active` folder data store in ArcGIS Enterprise. Delete the
+   ArcGIS-owned claim bound to `geodata-local-pv` and confirm it is gone.
+2. Delete the old DaemonSets so the previous agent stops writing while the
+   layout changes:
+   `kubectl delete daemonset geodata-sync-agent geodata-path-shim -n geodata-sync`.
+3. Install the chart. `helm install` rather than `helm upgrade` if the old
+   deployment was applied with `kubectl apply` and Helm never owned it.
+4. Wait for the first pass on every intended node, then confirm the mirror is at
+   `/mnt/geodata` and that `active/` and `staging/` are gone.
+5. Register one hostPath folder data store at `/mnt/geodata` for both routing and
+   geocoding, per
+   [Register the ArcGIS data store](#register-the-arcgis-data-store).
+6. Confirm the SELinux label on the tree once, as
+   [Recover a node whose mirror is unreadable](#recover-a-node-whose-mirror-is-unreadable)
+   describes. A node that consumed the old local PV before this migration may
+   already carry a relabeled tree, and that condition survives the migration —
+   the label is on the inodes, and the instance store is not rebuilt by
+   reinstalling the chart. Such a node needs replacing.
+
+```bash
+kubectl exec -n geodata-sync daemonset/geodata-sync-agent -- ls -1 /mnt/geodata
+# expect dataset names only: no active/, no staging/
+```
 
 ### Replace the source PersistentVolume
 
@@ -626,12 +692,32 @@ unreadable, which is the next runbook.
 
 ### Recover a node whose mirror is unreadable
 
-Symptoms: routing map services on one node return readiness 503 and their
+**The signal to look for is the taint.** When the agent finds `datasetRoot`
+present but unreadable it applies
+`<labelDomain>/data-unreadable=replace-node:NoSchedule` to the node and leaves the
+dataset-generation and count labels alone, because the mirror is still complete on
+disk and rewriting those labels would destroy correct state. The taint is
+therefore the machine-readable form of this condition:
+
+```bash
+kubectl get nodes -o custom-columns='NODE:.metadata.name,TAINTS:.spec.taints[*].key' \
+  | grep data-unreadable
+```
+
+Earlier releases had the agent crash instead: `list_datasets` let
+`PermissionError` escape and the pod entered `CrashLoopBackOff`, which is how this
+was originally found — the affected node's agent went from **269 to 379 restarts**.
+That crash is gone deliberately, because exiting the process also stopped the
+agent from reconciling anything. Do not wait for a crash loop; the taint and the
+per-interval `Dataset root is unreadable` warning in the agent log are the
+signals now.
+
+Other symptoms: routing map services on one node return readiness 503 and their
 Deployments pass the progress deadline; the Path Shim cannot `ls` or `mkdir` its
-path; the sync agent is in `CrashLoopBackOff` with
-`lstat /mnt/geodata/<dataset>: permission denied` or `PermissionError: [Errno 13]`
-— all against a directory that is still `drwxr-xr-x` root:root. Confirm by
-reading the label from the Path Shim pod on that node:
+path; the agent logs `lstat /mnt/geodata/<dataset>: permission denied` or
+`PermissionError: [Errno 13]` — all against a directory that is still
+`drwxr-xr-x` root:root. Confirm by reading the label from the Path Shim pod on
+that node:
 
 ```bash
 NODE=ip-10-0-37-101   # the affected node
@@ -660,9 +746,10 @@ PersistentVolume, in that order.
 **Removing the mount does not repair the node.** The label is written per inode on
 disk, not carried by the mount, so deregistering the data store, deleting the
 claim, and removing every referencing pod leaves the denial exactly where it was.
-Measured here: the affected node's sync agent went from **269 to 379 restarts
-across that removal**. The node does not self-heal, which is why replacement is
-not optional.
+That is what the 269-to-379 restart count above measured: it accumulated *across*
+the removal of the data store, the claim, and the PV, with the denial unchanged
+at the end of it. The node does not self-heal, which is why replacement is not
+optional.
 
 With the source removed, replace the node:
 
@@ -675,7 +762,9 @@ With the source removed, replace the node:
 4. Wait for the new node to complete its first sync and clear the
    data-not-ready taint.
 5. Confirm the replacement: label, mirror size, published dataset generation and
-   count, taint cleared.
+   count, data-not-ready taint cleared, and no `data-unreadable` taint. The agent
+   clears that one itself on the first readable pass, so its presence on a node
+   that has finished syncing means the replacement is affected too.
 6. Delete the old NodeClaim. The bad labels go with the instance store.
 
 **Blast radius: one node.** Its ArcGIS workloads move, its mirror is discarded
@@ -797,6 +886,14 @@ the correct generation and count with no data-not-ready taint while its tree was
 completely unreadable, and every ArcGIS pod on it reported ready. When
 diagnosing, verify access as the consuming identity — read the tree from a pod —
 rather than trusting the labels.
+
+The `data-unreadable` taint closes the specific case the agent can observe: if its
+own enumeration of `datasetRoot` is denied, the node is marked and the labels are
+left alone. It is not a general health signal either. The agent runs as UID 0 with
+its own MCS categories, so a tree that is readable to the agent and denied to a
+particular service pod, or a dataset that is readable at the top level and denied
+deeper in, produces no taint. Reading the tree as the consuming identity remains
+the only check that answers the question directly.
 
 ## Not covered
 

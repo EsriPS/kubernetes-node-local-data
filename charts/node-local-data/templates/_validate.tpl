@@ -7,6 +7,24 @@
 {{- end -}}
 
 {{/*
+  datasetRoot must already be normalized, because it is a runtime contract and
+  not only a validation input. It is rendered into both DaemonSet hostPaths and
+  mountPaths, the agent --dest-root argument, and the Bottlerocket
+  ephemeral-storage bind argument. Validating a cleaned copy while rendering the
+  raw value would let one spelling become several different directories: a
+  trailing space, for instance, survives a quoted scalar and is stripped from a
+  plain one, so the agent would bind one directory and mirror into another while
+  still writing a correct-looking generation label and clearing the readiness
+  taint. Rejecting the denormalized spelling here keeps every surface identical.
+  values.schema.json rejects whitespace, repeated separators, and a trailing
+  separator; this check covers . and .. segments, which the schema pattern cannot
+  express in Go's regexp dialect.
+*/}}
+{{- if ne $datasetRoot $cleanDatasetRoot -}}
+{{- fail (printf "datasetRoot %q is not normalized. Use %q instead: the value is rendered verbatim into both DaemonSet hostPaths, the agent --dest-root argument, and the Bottlerocket ephemeral-storage bind argument, and a denormalized spelling can resolve to different directories on different surfaces." $datasetRoot $cleanDatasetRoot) -}}
+{{- end -}}
+
+{{/*
   Legacy-key rejection. The geocoding local PersistentVolume was removed in chart
   0.2.0, so an upgrade from 0.1.0 carrying the old key must fail with an
   explanation rather than with a bare unknown-property error from the schema.

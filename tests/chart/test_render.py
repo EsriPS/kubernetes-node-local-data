@@ -3,6 +3,7 @@
 from collections import Counter
 from pathlib import Path
 import json
+import posixpath
 import re
 import shutil
 import subprocess
@@ -418,18 +419,29 @@ def test_helper_derived_identifiers_agree_across_resources_and_notes(render_char
 
     dedicated_key = "consistency.example.com/dedicated"
     not_ready_key = "consistency.example.com/data-not-ready"
+    unreadable_key = "consistency.example.com/data-unreadable"
     node_pool_spec = node_pool["spec"]["template"]["spec"]
     assert node_pool_spec["taints"][0]["key"] == dedicated_key
     assert node_pool_spec["startupTaints"][0]["key"] == not_ready_key
+    assert unreadable_key not in {
+        entry["key"] for entry in node_pool_spec["startupTaints"]
+    }, "a new node has no data yet, which is data-not-ready, not data-unreadable"
+
+    # The two DaemonSets must reach a node they have marked unreadable; the
+    # placeholders must not, so warm capacity moves to nodes that still work.
     for pod_spec in (
-        warm_pod,
         sync_agent["spec"]["template"]["spec"],
         path_shim["spec"]["template"]["spec"],
     ):
         assert {entry["key"] for entry in pod_spec["tolerations"]} == {
             dedicated_key,
             not_ready_key,
+            unreadable_key,
         }
+    assert {entry["key"] for entry in warm_pod["tolerations"]} == {
+        dedicated_key,
+        not_ready_key,
+    }
     assert f"- key: {dedicated_key}" in notes
     assert f'@.key=="{not_ready_key}"' in notes
     assert (
@@ -567,10 +579,10 @@ def test_schema_rejects_representative_invalid_values(
 @pytest.mark.parametrize(
     ("set_values", "expected_error"),
     [
-        (
-            ("datasetRoot=/mnt",),
-            "datasetRoot must be a non-root path below /mnt/",
-        ),
+        # datasetRoot spellings are covered by their own tests further down:
+        # the schema pattern now rejects /mnt and its siblings before any
+        # template renders, so the template-level message is asserted only for
+        # the forms the pattern cannot express.
         (
             ("warmCapacity.replicas=4",),
             "warmCapacity.replicas must not exceed nodePool.limits.nodes",
@@ -880,29 +892,74 @@ def test_relabeling_mount_on_a_non_overlapping_sibling_still_renders(
 # datasetRoot containment, including the forms only normalization catches
 # --------------------------------------------------------------------------
 
-#: ``/mnt`` is covered by the validation parametrize case above. These are the
-#: forms it does not reach: a root outside ``/mnt`` entirely, a sibling mount
-#: point sharing the string prefix, and two spellings that only fail once the
-#: path is normalized.
-NON_MNT_DATASET_ROOTS = (
+#: Spellings the schema pattern rejects outright, before any template renders:
+#: a root outside ``/mnt`` entirely, a sibling mount point sharing the string
+#: prefix, ``/mnt`` itself with and without a separator, and the three
+#: whitespace and separator forms that would otherwise render differently
+#: depending on whether the consuming template quoted the value.
+SCHEMA_REJECTED_DATASET_ROOTS = (
     "/srv/geodata",
     "/mntother/geodata",
+    "/mnt",
     "/mnt/",
+    "/mnt/geodata ",
+    "/mnt/geodata/",
+    "/mnt/geodata//nested",
+)
+
+#: Spellings the schema pattern accepts, because Go's regexp dialect has no
+#: lookahead and a ``..`` segment is indistinguishable from a name, and which
+#: escape ``/mnt`` only once normalized. These keep the template-level prefix
+#: check load-bearing.
+ESCAPING_DATASET_ROOTS = (
     "/mnt/../srv/geodata",
     "/mnt/geodata/../..",
 )
 
+#: Spellings that stay below ``/mnt/`` after normalization but are not written
+#: in normalized form. These are the ones that used to render verbatim into some
+#: surfaces and normalized into others.
+DENORMALIZED_DATASET_ROOTS = (
+    "/mnt/geodata/sibling/../nested",
+    "/mnt/geodata/./nested",
+)
 
-@pytest.mark.parametrize("dataset_root", NON_MNT_DATASET_ROOTS)
+
+@pytest.mark.parametrize("dataset_root", SCHEMA_REJECTED_DATASET_ROOTS)
+def test_schema_rejects_dataset_root_spellings_that_would_diverge(
+    render_chart, dataset_root: str
+):
+    """The schema pattern is the first line, and it fires before any template.
+
+    ``/mnt/geodata `` is the reason this matters beyond tidiness. A trailing
+    space survives a quoted YAML scalar and is stripped from a plain one, so
+    before this pattern existed one values entry became two directories: the
+    agent bound the instance store at ``/mnt/geodata`` and mirrored into
+    ``/mnt/geodata `` in its own writable layer, then enumerated that directory,
+    wrote a correct-looking generation label, and cleared the readiness taint
+    while the registered path stayed empty.
+
+    **Validates: Requirements 3.5, 3.8**
+    """
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        render_chart(EXAMPLE_VALUES, set_values=(f"datasetRoot={dataset_root}",))
+
+    message = helm_error(error)
+    assert "/datasetRoot" in message
+    assert "does not match pattern" in message
+
+
+@pytest.mark.parametrize("dataset_root", ESCAPING_DATASET_ROOTS)
 def test_dataset_root_outside_mnt_is_rejected_after_normalization(
     render_chart, dataset_root: str
 ):
     """``datasetRoot`` must be below ``/mnt/`` both as written and once cleaned.
 
     The raw check alone accepts ``/mnt/../srv/geodata``, which escapes ``/mnt``
-    on the node; the cleaned check alone accepts nothing extra but is what
-    catches it. Both halves of the condition are load-bearing and each of these
-    inputs fails if either half is dropped.
+    on the node; the cleaned check alone is what catches it. Both halves of the
+    condition are load-bearing and each of these inputs fails if either half is
+    dropped. Neither is reachable through the schema pattern, which cannot
+    express "no ``..`` segment" without lookahead.
 
     Bottlerocket only binds instance-store datasets below ``/mnt``, so a root
     that escapes it renders a chart whose bind target does not exist.
@@ -913,3 +970,80 @@ def test_dataset_root_outside_mnt_is_rejected_after_normalization(
         render_chart(EXAMPLE_VALUES, set_values=(f"datasetRoot={dataset_root}",))
 
     assert "datasetRoot must be a non-root path below /mnt/" in helm_error(error)
+
+
+@pytest.mark.parametrize("dataset_root", DENORMALIZED_DATASET_ROOTS)
+def test_denormalized_dataset_root_is_rejected_with_its_normalized_spelling(
+    render_chart, dataset_root: str
+):
+    """A denormalized root that stays below ``/mnt/`` is still refused.
+
+    These pass both the schema pattern and the prefix check, so the
+    normalization equality check is the only thing standing between them and a
+    rendered chart. Refusing them keeps validation and rendering operating on
+    the same string, and the message names the spelling to use instead.
+
+    **Validates: Requirements 3.5, 3.8**
+    """
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        render_chart(EXAMPLE_VALUES, set_values=(f"datasetRoot={dataset_root}",))
+
+    message = helm_error(error)
+    assert "is not normalized" in message
+    assert posixpath.normpath(dataset_root) in message
+
+
+def test_every_dataset_root_surface_is_quoted_and_identical(render_chart):
+    """One values entry must produce exactly one path on every rendered surface.
+
+    Asserted on parsed YAML rather than on the template text, so it holds
+    whatever quoting style a future edit uses. The surfaces are the two
+    DaemonSet hostPaths, their mountPaths, the agent ``--dest-root`` argument,
+    and the Bottlerocket ``ephemeral-storage bind`` argument in the
+    EC2NodeClass user data.
+
+    **Validates: Requirements 3.5, 3.8**
+    """
+    dataset_root = "/mnt/geodata"
+    documents, _notes = render_chart(EXAMPLE_VALUES)
+
+    observed: Dict[str, set] = {}
+
+    for document in documents:
+        if document.get("kind") == "DaemonSet":
+            name = document["metadata"]["name"]
+            pod = document["spec"]["template"]["spec"]
+            containers = pod.get("initContainers", []) + pod["containers"]
+            for container in containers:
+                for argument in container.get("args") or []:
+                    if "--dest-root=" in argument:
+                        observed.setdefault(f"{name} --dest-root", set()).add(
+                            argument.split("=", 1)[1]
+                        )
+                for mount in container.get("volumeMounts") or []:
+                    if mount["name"] in {"node-local-data", "dataset-root"}:
+                        observed.setdefault(f"{name} mountPath", set()).add(
+                            mount["mountPath"]
+                        )
+            for volume in pod.get("volumes") or []:
+                if "hostPath" in volume and volume["name"] != "source":
+                    observed.setdefault(f"{name} hostPath", set()).add(
+                        volume["hostPath"]["path"]
+                    )
+        if document.get("kind") == "EC2NodeClass":
+            user_data = document["spec"]["userData"]
+            observed["EC2NodeClass bind"] = set(
+                re.findall(r'"(/mnt/[^"]*)"', user_data)
+            )
+
+    # Every surface the mirror depends on must be present, or this test passes
+    # by finding nothing.
+    assert set(observed) == {
+        "geodata-sync-agent --dest-root",
+        "geodata-sync-agent mountPath",
+        "geodata-sync-agent hostPath",
+        "geodata-path-shim mountPath",
+        "geodata-path-shim hostPath",
+        "EC2NodeClass bind",
+    }
+    assert all(paths == {dataset_root} for paths in observed.values()), observed

@@ -61,6 +61,7 @@ evidence in the spec directory.
 """
 
 from pathlib import Path
+import copy
 import os
 import posixpath
 import re
@@ -91,6 +92,7 @@ MODULO_DIFFERENCE = frozenset(
         "chartVersion",
         "removedSELinuxSecurityContexts",
         "notesText",
+        "addedDataUnreadableToleration",
     }
 )
 
@@ -113,6 +115,16 @@ SELINUX_KEYS = ("seLinuxOptions",)
 #: comparison entirely. It is not unchecked — the registered-path case below
 #: asserts the only thing about it that is load-bearing, which is that it
 #: advertises exactly one dataset path and that path is ``datasetRoot``.
+
+#: ``addedDataUnreadableToleration``: the sync agent and Path Shim gained a
+#: toleration for the taint the agent applies when ``datasetRoot`` exists but
+#: cannot be read. Only the matching toleration entry is factored out, and only
+#: on the two DaemonSets; the warm-capacity placeholders deliberately do not
+#: tolerate it, so if that toleration ever appears there it shows up here as a
+#: byte difference rather than being absorbed. Nothing else about any pod spec is
+#: excluded.
+DATA_UNREADABLE_TAINT_SUFFIX = "/data-unreadable"
+TOLERATING_DAEMONSETS = ("-sync-agent", "-path-shim")
 
 BASELINE_DIR = Path(__file__).resolve().parent / "preservation_baseline"
 ROUTING_ONLY_BASELINE = BASELINE_DIR / "routing_only_render.yaml"
@@ -151,6 +163,35 @@ def is_removed_local_volume_resource(item: Resource) -> bool:
     )
 
 
+def without_data_unreadable_toleration(item: Resource) -> Resource:
+    """Drop the one added toleration, on the two DaemonSets that may carry it.
+
+    Scoped by resource name and by taint-key suffix so this cannot quietly
+    absorb a toleration added anywhere else, which is the whole point of a closed
+    difference set. A copy is returned; the input is not mutated.
+    """
+    name = str(item["metadata"]["name"])
+    if item["kind"] != "DaemonSet" or not name.endswith(TOLERATING_DAEMONSETS):
+        return item
+
+    pod_spec = item["spec"]["template"]["spec"]
+    tolerations = pod_spec.get("tolerations")
+    if not tolerations:
+        return item
+
+    kept = [
+        entry
+        for entry in tolerations
+        if not str(entry.get("key", "")).endswith(DATA_UNREADABLE_TAINT_SUFFIX)
+    ]
+    if len(kept) == len(tolerations):
+        return item
+
+    trimmed = copy.deepcopy(item)
+    trimmed["spec"]["template"]["spec"]["tolerations"] = kept
+    return trimmed
+
+
 def resource_identity(item: Resource) -> Tuple[str, str, str]:
     return (
         str(item["kind"]),
@@ -170,6 +211,7 @@ def normalize(manifests: Iterable[Resource]) -> str:
         _strip_keys(_strip_keys(item, SELINUX_KEYS), CHART_VERSION_KEYS)
         for item in kept
     ]
+    kept = [without_data_unreadable_toleration(item) for item in kept]
     kept.sort(key=resource_identity)
     return yaml.safe_dump_all(kept, sort_keys=True, default_flow_style=False)
 
@@ -375,9 +417,15 @@ def test_registered_routing_path_follows_dataset_root_everywhere(
 # Case 3 — sync semantics preservation (3.3)
 # ==========================================================================
 
-#: Observed on the unfixed agent: the complete rclone argv shape, in order.
+#: Observed on the unfixed agent: the complete rclone argv shape, in order, from
+#: the flag after the destination root up to the first ``--exclude``. Asserted as
+#: an ordered sequence rather than by membership, which is the only form that can
+#: catch a *removal*: ``--ignore-checksum`` was dropped from the invocation once
+#: and a membership check over this tuple could not see it, because the tuple had
+#: been written without it.
 RECORDED_RCLONE_FLAGS = (
     "--metadata",
+    "--ignore-checksum",
     "--transfers=8",
     "--multi-thread-streams=8",
     "--multi-thread-cutoff=256M",
@@ -442,8 +490,15 @@ def test_sync_pass_invocation_shape_is_unchanged(
     assert argv[2] == f"{source}{os.sep}"
     assert argv[3] == f"{destination}{os.sep}"
     assert "--inplace" not in argv
-    for flag in RECORDED_RCLONE_FLAGS:
-        assert flag in argv, f"{flag} disappeared from the rclone invocation"
+
+    # Ordered and exhaustive, not membership. A flag that disappears, a flag
+    # that appears, and a reordering all fail here; `flag in argv` catches only
+    # the second of those, and only for flags someone remembered to list.
+    first_exclude = argv.index("--exclude") if "--exclude" in argv else len(argv)
+    assert tuple(argv[4:first_exclude]) == RECORDED_RCLONE_FLAGS, (
+        "the rclone flag sequence changed; every member of RECORDED_RCLONE_FLAGS "
+        "is a measured decision recorded in ../tuning/rclone.md"
+    )
 
     exclude_pairs = tuple(
         argv[index + 1]
