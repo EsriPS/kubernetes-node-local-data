@@ -257,8 +257,8 @@ rather than being silently ignored.
 
 The source capacity, Bottlerocket data-volume size, and local NVMe instance
 requirement are independent settings. The chart does not infer or convert one
-from another. The default instance requirements select at least 1200 GB of local
-NVMe by rendering Karpenter's `Gt: "1199"`; Karpenter uses GB for that
+from another. The default instance requirements select at least 2400 GB of local
+NVMe by rendering Karpenter's `Gt: "2399"`; Karpenter uses GB for that
 requirement, while Kubernetes capacities use quantities such as Gi.
 
 The selected instance type must have enough instance-store space for the entire

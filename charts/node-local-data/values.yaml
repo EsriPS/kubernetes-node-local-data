@@ -73,12 +73,22 @@ nodePool:
       operator: Gt
       values:
         - "32767"
-    # Karpenter supports Gt, not Gte: 1199 encodes a 1200 GB minimum. Lowering
-    # this can select an instance that cannot hold the complete direct mirror.
+    # Karpenter supports Gt, not Gte: 2399 encodes a 2400 GB minimum. The label
+    # is reported in GB, not GiB -- a c8id.12xlarge carries 2850 and presents a
+    # 2653 GiB filesystem.
+    #
+    # This floor must exceed the mirror, with room for the source to grow. The
+    # mirror measured 1,764,305,428,480 bytes (1764 GB, 1643 GiB) on 2026-11-01
+    # across four datasets; 2400 GB is that plus a third. The previous value of
+    # 1199 predated three of those datasets and would have admitted an instance
+    # roughly 560 GB too small to hold the tree it was selected to carry.
+    #
+    # Re-measure when the source gains a dataset. Lowering this can select an
+    # instance that cannot hold the complete direct mirror.
     - key: karpenter.k8s.aws/instance-local-nvme
       operator: Gt
       values:
-        - "1199"
+        - "2399"
     # Baseline network bandwidth in Mbps. Re-derive this floor for the source
     # filesystem; an unsuitable value can make full sync times unpredictable.
     - key: karpenter.k8s.aws/instance-network-bandwidth

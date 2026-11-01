@@ -96,14 +96,21 @@ replaced, but not another complete mirror. The requirement depends on file sizes
 and transfer concurrency, so measure the publication workload rather than
 assuming temporary space is negligible.
 
-The chart's default Karpenter floor requests at least 1200 GB of local NVMe by
+The chart's default Karpenter floor requests at least 2400 GB of local NVMe by
 using Karpenter's supported strict comparison:
 
 ```yaml
 - key: karpenter.k8s.aws/instance-local-nvme
   operator: Gt
-  values: ["1199"]
+  values: ["2399"]
 ```
+
+The floor is a measurement, not a round number. A four-dataset mirror measured
+1,764,305,428,480 bytes (1764 GB, 1643 GiB) on 2026-11-01, and 2400 GB is that
+plus a third for the source to grow into. Re-measure when the source gains a
+dataset: a floor below the mirror selects an instance that fills up partway
+through the first sync, and the earlier default of 1200 GB was roughly 560 GB
+short of this tree.
 
 Expressing this as a floor rather than a pinned instance type lets Karpenter
 choose from a mixed fleet. Constrain instance category as well, otherwise the
