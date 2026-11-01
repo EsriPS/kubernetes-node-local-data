@@ -4,4 +4,11 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.hypothesis/
 *.py[cod]
+
+# Operator-local configuration and generated render artifacts.
+# my-values.yaml is created by copying examples/values-example.yaml and holds
+# environment-specific identifiers; rendered-install.yaml is helm template output.
+my-values.yaml
+rendered-install.yaml

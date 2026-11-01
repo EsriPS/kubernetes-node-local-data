@@ -1,0 +1,47 @@
+Node-local data release {{ .Release.Name }}
+
+Watch sync-agent logs:
+  kubectl --namespace {{ include "node-local-data.namespace" . }} logs daemonset/{{ include "node-local-data.syncAgentName" . }} --all-containers=true --follow
+
+Inspect first-sync readiness and the dataset-generation/count labels:
+  kubectl get nodes --selector {{ include "node-local-data.workloadLabelKey" . }}={{ .Values.workloadValue }} --output 'custom-columns=NODE:.metadata.name,GENERATION:.metadata.labels.{{ include "node-local-data.datasetGenerationJSONPathLabelKey" . }},COUNT:.metadata.labels.{{ include "node-local-data.datasetCountJSONPathLabelKey" . }},NOT_READY:.spec.taints[?(@.key=="{{ include "node-local-data.dataNotReadyTaintKey" . }}")].key'
+
+A node is ready when GENERATION and COUNT are populated and NOT_READY is empty.
+A node that has not yet completed its first sync holds no data to serve.
+{{- if .Values.pathShim.enabled }}
+
+Shared hostPath registration for ArcGIS:
+  Host path: {{ include "node-local-data.datasetRoot" . }}
+
+Register that one folder data store for both routing and geocoding. A hostPath
+folder data store is never relabeled, so every consumer reads the mirror without
+changing what the other consumers see on disk. Publish against it only after the
+readiness check above reports a completed first sync on the nodes you intend to
+serve from: a hostPath store resolves to an empty directory rather than failing
+to mount.
+
+Place ArcGIS workloads that read the mirror on the mirrored-data nodes with:
+  tolerations:
+    - key: {{ include "node-local-data.dedicatedTaintKey" . }}
+      operator: Equal
+      value: {{ .Values.workloadValue }}
+      effect: NoSchedule
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: {{ include "node-local-data.workloadLabelKey" . }}
+                operator: In
+                values:
+                  - {{ .Values.workloadValue }}
+{{- end }}
+{{- if not .Values.warmCapacity.enabled }}
+
+Warm capacity is disabled. The first mirrored-data workload must wait for
+Karpenter to provision a node and for that node's initial sync to finish.
+{{- end }}
+
+NodePool or EC2NodeClass changes can mark NodeClaims Drifted. Because voluntary
+disruption is disabled, review the rendered upgrade and replace affected
+NodeClaims deliberately; each replacement must rebuild its local mirror.

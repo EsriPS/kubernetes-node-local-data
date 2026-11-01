@@ -1,11 +1,15 @@
-# Tuning the copy engine
+# Tuning the sync engine
 
-Use a copy engine that reads concurrently within a single file. That one
+Use a sync engine that reads concurrently within a single file. That one
 property is the difference between a roughly twenty-minute sync and a roughly
 five-minute one on this shape of data.
 
 Figures come from a test cluster: a roughly 500 GB dataset, read from FSx for
 NetApp ONTAP onto local NVMe, on nodes with 48 vCPU. Treat them as indicative.
+ONTAP is the authoritative source. The agent runs exactly one recursive
+`rclone sync <source>/ <datasetRoot>/`, where `datasetRoot` is the exact
+configured destination (`/mnt/geodata` by default). Source additions, changes,
+and deletions are reflected in the mirror, subject to configured excludes.
 
 ## Why a whole-file copier cannot reach the target
 
@@ -39,28 +43,63 @@ reached about 2,000 MB/s and saturated provisioned IOPS at roughly 110%, so
 raising them further has nothing left to claim. Lowering them costs throughput
 directly.
 
-## Three flags carry correctness, not performance
+## Comparison and deletion semantics
 
-**`--metadata` is required.** rclone's local backend preserves modification time
-only. Without this flag, ownership and mode are dropped. Nothing else catches
-it: the byte total matches, and a content digest matches, because only the
-permissions differ. It is the least visible of the three and the easiest to lose
+Rclone normally decides whether a destination file is current by comparing its
+size and modification time with the source. Publishing a same-named file on
+ONTAP must change its size or modification time for the agent to detect it
+without checksum mode. After a successful pass, every included path in
+`datasetRoot` matches by that comparison, and paths absent from ONTAP have been
+deleted. Excluded paths are outside that guarantee.
+
+This makes ONTAP the gold copy. Node-local content is not retained independently
+of its source. Confirm source deletions deliberately before publishing them: the
+next successful sync removes the corresponding mirror paths from every node.
+
+## Flags that carry correctness
+
+**`--metadata` is required.** Rclone's local backend preserves modification time
+only by default. Without this flag, ownership and mode are dropped. Nothing else
+catches it: the byte total matches, and a content digest matches, because only
+the permissions differ. It is the least visible setting and the easiest to lose
 during benchmarking.
 
-**`--inplace` must never be set.** With multi-thread streams the destination is
-extended to its full size before the data arrives, so an interrupted in-place
-transfer leaves a file at its final name and final size containing holes. No
-size check distinguishes that from a complete copy.
+**`--inplace` must never be set.** With multi-thread streams the destination can
+be extended to its full size before all data arrives, so an interrupted in-place
+transfer can leave a final path with its expected size but incomplete contents.
+Without `--inplace`, rclone writes changed content to a temporary file and
+renames it over the destination only after transfer completes.
 
-**`--no-check-dest` must never be set.** It re-transfers everything on every
-pass. That satisfies the letter of a retry requirement while destroying the
-property that makes retry affordable, which is resuming into a staging directory
-that survived the failure.
+That rename gives atomic replacement of one final file path, not atomicity for
+the whole directory tree. Additions, replacements, and deletions become visible
+at different times during a pass, so consumers can observe a mix of old and new
+files. If a dataset release requires cross-file atomicity, coordinate ONTAP
+publication with draining or restarting consumers; the sync agent does not
+provide a snapshot switch.
 
-The agent's tests assert the absence of the last two. Both were introduced
-during benchmarking, and one survived into a committed manifest before it was
-caught. A flag chosen for throughput is exactly the kind of change that quietly
-contradicts a settled decision, so assert on it rather than relying on review.
+**`--no-check-dest` must never be set.** It forces unnecessary retransfers on
+every pass and defeats the normal size-and-modification-time comparison that
+makes routine retries and incremental syncs affordable.
+
+The agent's tests assert the absence of the last two flags. Both were introduced
+during benchmarking, and one survived into a committed deployment definition
+before it was caught. A throughput flag can quietly contradict a settled
+correctness decision, so assert on it rather than relying on review.
+
+## Space and interrupted passes
+
+The agent maintains only the direct mirror in exact `datasetRoot`; it does not
+maintain a second full mirror tree. Size local NVMe for the complete source
+mirror, rclone temporary files for files currently transferring or being
+replaced, and operational headroom for growth and workload activity. The
+temporary requirement depends on transfer concurrency and the sizes of files
+changing in the same pass; it is not another complete dataset copy.
+
+A failed or interrupted pass is not rolled back. Files already added, replaced,
+or deleted can remain visible, while final paths for incomplete changed-file
+transfers retain their old content because `--inplace` is absent. The agent
+retries on its next interval. A later successful pass reconciles the direct
+mirror, including transfer temporary files left by interruption.
 
 ## Memory
 
@@ -68,10 +107,9 @@ Allocate 1Gi as both request and limit. Peak anonymous memory during a cold sync
 is roughly 560 MiB at 8 x 8, sampled from inside the cgroup, so 1Gi is about
 1.8x headroom.
 
-512Mi does not survive. The copy is OOMKilled within seconds, and a kill
-mid-sync leaves the node without data and its services unable to start. A
-smaller limit measured against a single-threaded rsync agent does not transfer,
-because rclone holds transfers x streams x chunk size in flight.
+512Mi does not survive. The process is OOMKilled within seconds. A smaller limit
+measured against a single-threaded rsync agent does not transfer, because rclone
+holds transfers x streams x chunk size in flight.
 
 If the limit has to come down, the lever is concurrency, and lowering it costs
 throughput. Re-measure rather than reason about buffer arithmetic; the
@@ -83,12 +121,20 @@ A cold sync at 10m and at 4 cores finished within a second of each other. Where
 a low request costs something is a routine update rather than the first sync,
 since a re-sync competes with service pods that have real requests.
 
-## Verify the copy, not just the timing
+## Readiness labels and verification
 
-Check all four after a sync:
+After every successful pass, the dataset-generation label hashes the sorted
+top-level names directly in `datasetRoot`, and dataset-count records their
+count. The generation is an identity for the top-level dataset set, not a
+checksum of file contents. Changing files beneath unchanged top-level names does
+not change the label.
 
-- byte count and file count match the source
-- mode and modification time match the source, which is what proves `--metadata`
-  took effect
-- the staging directory is empty, which proves the rename stayed a rename
-- the node's generation label is set and the bootstrap taint is cleared
+Check all of the following after a sync:
+
+- included file counts, byte totals, and expected source deletions agree with the
+  direct mirror in exact `datasetRoot`;
+- mode and modification time match the source, proving `--metadata` took effect;
+- no second dataset tree exists, and local free space still includes temporary
+  transfer capacity and operational headroom;
+- the node's dataset-generation and dataset-count labels are set and the startup
+  taint is cleared.

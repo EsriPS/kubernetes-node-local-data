@@ -1,0 +1,93 @@
+# The sync agent mirrors the authoritative source directly into datasetRoot.
+# Source deletions propagate to the mirror, and no second full staging tree is
+# maintained. Rclone replaces completed files without --inplace; the whole pass
+# is not an atomic filesystem snapshot.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "node-local-data.syncAgentName" . }}
+  namespace: {{ include "node-local-data.namespace" . }}
+  labels:
+    {{- include "node-local-data.commonLabels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "node-local-data.selectorLabels" (include "node-local-data.syncAgentName" .) | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "node-local-data.selectorLabels" (include "node-local-data.syncAgentName" .) | nindent 8 }}
+        {{- include "node-local-data.commonLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "node-local-data.syncAgentName" . }}
+      nodeSelector:
+        {{- include "node-local-data.workloadSelector" . | nindent 8 }}
+      # The agent must schedule before the first mirror is ready because it
+      # removes the startup taint after a successful pass. It must also schedule
+      # onto a node it has itself marked unreadable: the agent is what applies
+      # that taint, what clears it if the root becomes readable again, and the
+      # only thing reporting the condition at all. An untolerated key here would
+      # mean a restarted pod never lands and the node goes silent again.
+      tolerations:
+        - key: {{ include "node-local-data.dataNotReadyTaintKey" . }}
+          value: "true"
+          effect: NoSchedule
+        - key: {{ include "node-local-data.dataUnreadableTaintKey" . }}
+          operator: Exists
+          effect: NoSchedule
+        - key: {{ include "node-local-data.dedicatedTaintKey" . }}
+          value: {{ .Values.workloadValue | quote }}
+          effect: NoSchedule
+      priorityClassName: system-node-critical
+      # Allow an in-flight transfer to finish during normal pod termination.
+      terminationGracePeriodSeconds: {{ .Values.syncAgent.terminationGracePeriodSeconds }}
+      containers:
+        - name: sync-agent
+          image: {{ printf "%s/geodata-sync-agent:%s" .Values.image.repository .Values.image.tag | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --source=/mnt/source
+            - {{ printf "--dest-root=%s" (include "node-local-data.datasetRoot" .) | quote }}
+            - {{ printf "--interval=%v" .Values.syncAgent.intervalSeconds | quote }}
+            - {{ printf "--transfers=%v" .Values.syncAgent.transfers | quote }}
+            - {{ printf "--multi-thread-streams=%v" .Values.syncAgent.multiThreadStreams | quote }}
+            {{- range .Values.syncAgent.excludes }}
+            - {{ printf "--exclude=%s" . | quote }}
+            {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: LABEL_DOMAIN
+              value: {{ .Values.labelDomain | quote }}
+          securityContext:
+            runAsUser: 0
+            privileged: false
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: source
+              mountPath: /mnt/source
+              readOnly: true
+            - name: node-local-data
+              mountPath: {{ include "node-local-data.datasetRoot" . | quote }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: {{ .Values.syncAgent.memory }}
+            limits:
+              memory: {{ .Values.syncAgent.memory }}
+      volumes:
+        - name: source
+          persistentVolumeClaim:
+            claimName: {{ include "node-local-data.sourcePersistentVolumeClaimName" . }}
+            readOnly: true
+        - name: node-local-data
+          hostPath:
+            # This is the direct mirror destination, not a staging parent.
+            path: {{ include "node-local-data.datasetRoot" . | quote }}
+            type: DirectoryOrCreate

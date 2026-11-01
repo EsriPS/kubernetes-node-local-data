@@ -1,0 +1,39 @@
+{{- include "node-local-data.validate" . }}
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: {{ include "node-local-data.nodesName" . }}
+spec:
+  role: {{ .Values.aws.nodeRole | quote }}
+  # Karpenter resolves this family@version alias; it is not an EC2 AMI ID or
+  # AMI name. The chart intentionally exposes only the pinned alias selector.
+  amiSelectorTerms:
+    - alias: {{ .Values.aws.amiAlias | quote }}
+  subnetSelectorTerms:
+{{ toYaml .Values.aws.subnetSelectorTerms | nindent 4 }}
+  securityGroupSelectorTerms:
+{{ toYaml .Values.aws.securityGroupSelectorTerms | nindent 4 }}
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 4Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeSize: {{ .Values.ec2NodeClass.dataVolumeSize }}
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+
+  # Bottlerocket permits custom ephemeral-storage bind targets only below /mnt/.
+  # Keep init before bind in one essential entry: split entries may be reordered.
+  userData: |
+    [settings.bootstrap-commands.{{ include "node-local-data.resourceName" (list . "nvme") }}]
+    commands = [["apiclient", "ephemeral-storage", "init"], ["apiclient", "ephemeral-storage", "bind", "--dirs", {{ include "node-local-data.datasetRoot" . | quote }}]]
+    mode = "always"
+    essential = true
+
+  tags:
+{{ include "node-local-data.commonLabels" . | nindent 4 }}

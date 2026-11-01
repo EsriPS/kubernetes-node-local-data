@@ -1,0 +1,127 @@
+namePrefix: geodata
+
+namespace:
+  create: true
+  name: geodata-sync
+
+# Required. Use a DNS domain you control for chart-managed labels and taints.
+labelDomain: ""
+workloadValue: geodata
+
+# This exact path is the direct source mirror and must remain below /mnt/ for
+# Bottlerocket. Source deletions propagate here; it is not an archival copy.
+datasetRoot: /mnt/geodata
+
+image:
+  # Required. Repository containing the customer-built sync-agent image.
+  repository: ""
+  tag: "0.5.0"
+  pullPolicy: IfNotPresent
+
+nfs:
+  # Required installation-specific source-export settings.
+  server: ""
+  shareName: ""
+  sharePath: ""
+  capacity: ""
+  mountOptions:
+    - nfsvers=4.1
+    - nconnect=16
+
+aws:
+  # Required. This is a Karpenter `family@version` alias selector, not an EC2
+  # AMI ID or name. Pin a tested release, for example bottlerocket@v1.64.0;
+  # changing it can mark every NodeClaim Drifted and replacement discards each
+  # node's local mirror.
+  amiAlias: ""
+  nodeRole: ""
+  subnetSelectorTerms: []
+  securityGroupSelectorTerms: []
+
+ec2NodeClass:
+  # Holds container and kubelet state, not the mirrored dataset.
+  dataVolumeSize: 200Gi
+
+nodePool:
+  architectures:
+    - amd64
+  operatingSystems:
+    - linux
+  zones: []
+  capacityTypes:
+    - on-demand
+
+  # Replace this list to pin instance types. The chart does not verify that a
+  # replacement list has enough local storage, memory, CPU, or network capacity.
+  instanceRequirements:
+    - key: karpenter.k8s.aws/instance-category
+      operator: In
+      values:
+        - c
+        - m
+        - r
+        - i
+    - key: karpenter.k8s.aws/instance-generation
+      operator: Gt
+      values:
+        - "7"
+    - key: karpenter.k8s.aws/instance-cpu
+      operator: Gt
+      values:
+        - "7"
+    - key: karpenter.k8s.aws/instance-memory
+      operator: Gt
+      values:
+        - "32767"
+    # Karpenter supports Gt, not Gte: 2399 encodes a 2400 GB minimum. The label
+    # is reported in GB, not GiB -- a c8id.12xlarge carries 2850 and presents a
+    # 2653 GiB filesystem.
+    #
+    # This floor must exceed the mirror, with room for the source to grow. The
+    # mirror measured 1,764,305,428,480 bytes (1764 GB, 1643 GiB) on 2026-11-01
+    # across four datasets; 2400 GB is that plus a third. The previous value of
+    # 1199 predated three of those datasets and would have admitted an instance
+    # roughly 560 GB too small to hold the tree it was selected to carry.
+    #
+    # Re-measure when the source gains a dataset. Lowering this can select an
+    # instance that cannot hold the complete direct mirror.
+    - key: karpenter.k8s.aws/instance-local-nvme
+      operator: Gt
+      values:
+        - "2399"
+    # Baseline network bandwidth in Mbps. Re-derive this floor for the source
+    # filesystem; an unsuitable value can make full sync times unpredictable.
+    - key: karpenter.k8s.aws/instance-network-bandwidth
+      operator: Gt
+      values:
+        - "16000"
+
+  limits:
+    nodes: 3
+    cpu: 144
+
+  # Templates intentionally disable expiry and consolidation and set voluntary
+  # disruption to zero. AMI or requirement changes require deliberate NodeClaim
+  # review and replacement rather than an automatic rollout.
+
+warmCapacity:
+  enabled: true
+  replicas: 2
+  priority: -10
+  image: registry.k8s.io/pause:3.10
+
+syncAgent:
+  intervalSeconds: 300
+  transfers: 8
+  multiThreadStreams: 8
+  excludes:
+    - "*.zip.*"
+    - "*.zip"
+  memory: 1Gi
+  terminationGracePeriodSeconds: 4800
+  # The direct mirror intentionally never uses --inplace. Rclone replaces each
+  # completed file by rename, while a pass as a whole is not atomic.
+
+pathShim:
+  enabled: true
+  image: public.ecr.aws/amazonlinux/amazonlinux:2023

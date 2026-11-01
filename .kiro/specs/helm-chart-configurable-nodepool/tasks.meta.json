@@ -1,0 +1,554 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Replace the per-dataset staging algorithm in `agent/sync_agent.py`": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218568861
+      },
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218586366
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788219880816
+      }
+    ],
+    "1.2 Update mandatory sync-agent behavior and real-rclone integration tests in `agent/tests/test_integration.py`": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218568965
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788219901379
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220267448
+      }
+    ],
+    "1.3 Add mandatory focused tests for Design Property 3: successful syncs establish mirror readiness": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218568999
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220283785
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220395685
+      }
+    ],
+    "1.4 Update non-chart agent image-version references": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569036
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788219902644
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220268904
+      }
+    ],
+    "2.1 Create `charts/node-local-data/Chart.yaml`": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569089
+      },
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218591261
+      },
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218949205
+      }
+    ],
+    "2.2 Create `charts/node-local-data/values.yaml`": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569128
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788219906781
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220272405
+      }
+    ],
+    "2.3 Create `charts/node-local-data/values.schema.json`": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569174
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788219908202
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220278108
+      }
+    ],
+    "3.1 Create `charts/node-local-data/templates/_helpers.tpl`": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569218
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220286657
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220410305
+      }
+    ],
+    "3.2 Create `charts/node-local-data/templates/_validate.tpl`": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569276
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220289380
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220413632
+      }
+    ],
+    "4.1 Template Namespace and RBAC resources": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569309
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220419178
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220720305
+      }
+    ],
+    "4.2 Template the EC2NodeClass": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569339
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220420747
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220722153
+      }
+    ],
+    "4.3 Template the NodePool": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569372
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220425654
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220725619
+      }
+    ],
+    "4.4 Template warm capacity": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569415
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220428449
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220727056
+      }
+    ],
+    "4.5 Template source storage": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569457
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220430950
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220728795
+      }
+    ],
+    "4.6 Template the sync-agent DaemonSet": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569491
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220432530
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220853095
+      }
+    ],
+    "4.7 Template the Path Shim": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569528
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220434008
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220860337
+      }
+    ],
+    "4.8 Template local storage": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569561
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220435935
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220862830
+      }
+    ],
+    "5.1 Create `charts/node-local-data/templates/NOTES.txt`": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569593
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220872351
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221106206
+      }
+    ],
+    "5.2 Create documented example values": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569633
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220877202
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221115976
+      }
+    ],
+    "5.3 Simplify `scripts/check-placeholders.sh`": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569678
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220879012
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221118194
+      }
+    ],
+    "6.1 Create the mandatory chart test harness": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569718
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220891837
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221120264
+      }
+    ],
+    "6.2 Add the mandatory focused render and validation matrix": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569754
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221131115
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221298069
+      }
+    ],
+    "6.3 Add mandatory focused tests for Design Property 1: rendered identifiers and capacities remain consistent": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569788
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221307006
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221498641
+      }
+    ],
+    "6.4 Add mandatory focused tests for Design Property 2: dataset paths use the direct dataset root": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569828
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221510249
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221677957
+      }
+    ],
+    "7.1 Rewrite README installation, configuration, and lifecycle sections": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569863
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220897007
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221123509
+      }
+    ],
+    "7.2 Rewrite sync and operational guidance": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569903
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221132821
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221301971
+      }
+    ],
+    "7.3 Remove superseded deployment sources and update contributor commands": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569949
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221309207
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221500838
+      }
+    ],
+    "7.4 Update `RESULTS.md` for the deployment-source migration": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218569982
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221513517
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221680473
+      }
+    ],
+    "8.1 Run every mandatory validation command and fix implementation failures": [
+      {
+        "executionId": "0101431a-7c0f-4fbc-a2f6-2ab4aa196a1f",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788218570021
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221685244
+      },
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788222025007
+      }
+    ],
+    "2. Create the chart interface": [
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220278140
+      }
+    ],
+    "1. Change the sync agent from append-only datasets to a direct mirror": [
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220395715
+      }
+    ],
+    "3. Implement shared helpers and concise validation": [
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220413666
+      }
+    ],
+    "4. Convert the Kubernetes resources to Helm templates": [
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788220862863
+      }
+    ],
+    "5. Add release output, examples, and placeholder validation": [
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221118237
+      }
+    ],
+    "6. Add focused automated validation": [
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221677989
+      }
+    ],
+    "7. Migrate maintained deployment content": [
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788221680505
+      }
+    ],
+    "8. Complete mandatory repository validation": [
+      {
+        "executionId": "49636c25-dad2-4218-a724-0a3ac5a4912d",
+        "chatSessionId": "sess_c7e9469a-f628-4d34-bb36-75cbc6756bad",
+        "timestamp": 1788222025078
+      }
+    ]
+  }
+}

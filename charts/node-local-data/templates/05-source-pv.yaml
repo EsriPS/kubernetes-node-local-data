@@ -1,0 +1,39 @@
+{{- include "node-local-data.validate" . }}
+# Static source storage. The NFS CSI driver performs the mount on Bottlerocket;
+# this volume is read-only and does not create or alter the source export.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ include "node-local-data.sourceStorageClassName" . }}
+  labels:
+    {{- include "node-local-data.commonLabels" . | nindent 4 }}
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: Immediate
+reclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "node-local-data.sourcePersistentVolumeName" . }}
+  labels:
+    {{- include "node-local-data.commonLabels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ .Values.nfs.capacity }}
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ include "node-local-data.sourceStorageClassName" . }}
+  mountOptions:
+    {{- toYaml .Values.nfs.mountOptions | nindent 4 }}
+  csi:
+    driver: nfs.csi.k8s.io
+    volumeHandle: {{ include "node-local-data.sourceVolumeHandle" . | quote }}
+    readOnly: true
+    volumeAttributes:
+      server: {{ .Values.nfs.server | quote }}
+      share: {{ .Values.nfs.sharePath | quote }}
+  # Pre-bind the static volume so an unrelated pending claim cannot select it.
+  claimRef:
+    namespace: {{ include "node-local-data.namespace" . }}
+    name: {{ include "node-local-data.sourcePersistentVolumeClaimName" . }}

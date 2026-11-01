@@ -1,0 +1,473 @@
+{
+  "pbtResults": {
+    "2. Write bug condition exploration test": {
+      "status": "passed",
+      "failingExample": "The exploration test FAILED on the unfixed chart, as expected, confirming the bug. All 5 parameterised datasetRoot cases failed; every pre-existing chart test still passed (5 failed, 17 passed).\n\nCOUNTEREXAMPLE - the bug condition is representable.\n  datasetRoot='/mnt/geodata'\n  helm template SUCCEEDED. It should have been rejected: a relabeling local PV and non-relabeling hostPath mounts were rendered over one directory tree.\n  Rendered mount paths (1 distinct value):\n    PersistentVolume/geodata-local-pv .spec.local.path (RELABELING)\n      '/mnt/geodata'\n    DaemonSet/geodata-path-shim volume 'dataset-root' .hostPath.path (NOT relabeled)\n      '/mnt/geodata'\n    DaemonSet/geodata-sync-agent volume 'node-local-data' .hostPath.path (NOT relabeled)\n      '/mnt/geodata'\n\nStructural, not tied to the default path - all five parameterised roots rendered 1 distinct path across all three mounts and all five rendered successfully:\n  /mnt/geodata                     -> 1 distinct path, rendered\n  /mnt/geodata/                    -> 1 distinct path, rendered\n  /mnt/alternate-geodata           -> 1 distinct path, rendered\n  /mnt/geodata//nested             -> 1 distinct path, rendered\n  /mnt/geodata/sibling/../nested   -> 1 distinct path, rendered\n\nCause: node-local-data.datasetRoot in _helpers.tpl interpolates .Values.datasetRoot verbatim with no normalization, so the local PV path and both hostPath paths are the same string for any accepted value.",
+      "lastRunTimestamp": 1788457230321
+    },
+    "3. Write preservation property tests (BEFORE implementing fix)": {
+      "status": "passed",
+      "lastRunTimestamp": 1788457968147
+    },
+    "4.8 Verify bug condition exploration test now passes": {
+      "status": "passed",
+      "lastRunTimestamp": 1788461431798
+    }
+  },
+  "executionHistory": {
+    "Optional: item 3 — kernel AVC capture from the Bottlerocket host journal": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456210568
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456231309
+      }
+    ],
+    "Optional: item 7 — D2's controlled hostPath-versus-local comparison on a scratch path": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456210649
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456239707
+      }
+    ],
+    "1.1 Remove the schema `required` entry, the schema property, and the `values.yaml` default together in one change": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456210704
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456244138
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456350094
+      }
+    ],
+    "1.2 Remove the template-side shared-level machinery": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456210744
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456355184
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456535359
+      }
+    ],
+    "1.3 Remove the shared-level test coverage": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456210790
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456539441
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456629317
+      }
+    ],
+    "1.4 Remove the operator-facing shared-level values and set the chart version": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456210842
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456634194
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456713678
+      }
+    ],
+    "1.5 Prove the rollback green before any new behavior is added": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456210886
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456719470
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788457001075
+      }
+    ],
+    "2. Write bug condition exploration test": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456210933
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788457005407
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788457278445
+      }
+    ],
+    "3. Write preservation property tests (BEFORE implementing fix)": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456210992
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788457285944
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788458017148
+      }
+    ],
+    "4.1 Remove the local PV, its StorageClass, and its values surface": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211034
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788458124002
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788458745234
+      }
+    ],
+    "4.2 Add the `localVolume` legacy-key rejection": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211076
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788458750100
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788459037506
+      }
+    ],
+    "4.3 Add the `pathsOverlap` helper and the overlap check as a forward guard": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211120
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788459044138
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788459442391
+      }
+    ],
+    "4.4 Remove the now-unused helpers": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211159
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788459449421
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788459597421
+      }
+    ],
+    "4.5 Rewrite the install notes": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211202
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788459604322
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788459865318
+      }
+    ],
+    "4.6 Confirm the chart version": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211242
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788459875377
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788460033014
+      }
+    ],
+    "4.7 Execute the remaining operational step — the chart upgrade and the PV absence check": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211282
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788460265990
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788461139441
+      }
+    ],
+    "4.8 Verify bug condition exploration test now passes": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211334
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788461152117
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788461469721
+      }
+    ],
+    "4.9 Verify preservation tests still pass": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211379
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788461477364
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788462336801
+      }
+    ],
+    "5.1 Chart render and schema cases": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211418
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788462348417
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788463231008
+      }
+    ],
+    "5.2 `pathsOverlap` normalization unit cases": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211459
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788463236372
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788463750361
+      }
+    ],
+    "5.3 `pathsOverlap` property-based cases": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211498
+      },
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788463756572
+      }
+    ],
+    "5.4 Preservation cases with the MODULO difference set enumerated": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211539
+      }
+    ],
+    "5.5 Agent enumeration cases — only if task 6 is implemented": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211580
+      }
+    ],
+    "6.1 Optional (F7) — stream rclone's stderr so long syncs are observable": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211621
+      }
+    ],
+    "6.2 Optional (F6) — distinguish unreadable from empty and scope readiness to an access check": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211659
+      }
+    ],
+    "7.1 `README.md` — remove the rejected guidance": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211701
+      }
+    ],
+    "7.2 `README.md` — the `seclabel` rule and volume-type asymmetry": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211741
+      }
+    ],
+    "7.3 `README.md` — close the \"just turn SELinux off\" question with citations": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211788
+      }
+    ],
+    "7.4 `README.md` — the single-`hostPath` path model": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211847
+      }
+    ],
+    "7.5 `README.md` — node-replacement recovery as the primary runbook": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211890
+      }
+    ],
+    "7.6 `README.md` — troubleshooting: in-pod path remapping and progress observation": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211932
+      }
+    ],
+    "7.7 `tuning/gotchas.md` — replace the wrong rule and add the durable ones": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456211968
+      }
+    ],
+    "7.8 `tuning/nvme.md` — path-model correction": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456212013
+      }
+    ],
+    "7.9 `RESULTS.md` — conditions plus the counter-measurement": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456212061
+      }
+    ],
+    "8. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788456212109
+      }
+    ],
+    "1. Roll back the prior session's shared-MCS-level changes as targeted edits": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788457001117
+      }
+    ],
+    "4. Fix for the relabeling volume sharing the routing tree — remove the relabeling volume type": [
+      {
+        "executionId": "753c6e2a-98b4-49ea-bf19-c773e4da5336",
+        "chatSessionId": "sess_45539110-9133-48b6-bced-7f35c333b635",
+        "timestamp": 1788462336848
+      }
+    ]
+  }
+}

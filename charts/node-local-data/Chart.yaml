@@ -1,0 +1,7 @@
+apiVersion: v2
+name: node-local-data
+description: Provision dedicated Kubernetes nodes with node-local mirrors of an authoritative NFS dataset.
+type: application
+version: 0.2.0
+appVersion: "0.5.0"
+kubeVersion: ">=1.25.0-0"

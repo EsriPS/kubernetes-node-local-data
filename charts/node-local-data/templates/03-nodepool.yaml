@@ -1,0 +1,64 @@
+{{- include "node-local-data.validate" . }}
+# Nodes in this pool hold a full local mirror, so replacement requires a full
+# re-sync. Expiry, consolidation, and voluntary disruption remain disabled.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: {{ include "node-local-data.nodesName" . }}
+spec:
+  template:
+    metadata:
+      labels:
+{{ include "node-local-data.workloadSelector" . | nindent 8 }}
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: {{ include "node-local-data.nodesName" . }}
+      # Permanent gate for workloads without the dedicated-node toleration.
+      taints:
+        - key: {{ include "node-local-data.dedicatedTaintKey" . }}
+          value: {{ .Values.workloadValue | quote }}
+          effect: NoSchedule
+      # Bootstrap gate removed by the sync agent only after the mirror is ready.
+      startupTaints:
+        - key: {{ include "node-local-data.dataNotReadyTaintKey" . }}
+          value: "true"
+          effect: NoSchedule
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values:
+{{ toYaml .Values.nodePool.architectures | nindent 12 }}
+        - key: kubernetes.io/os
+          operator: In
+          values:
+{{ toYaml .Values.nodePool.operatingSystems | nindent 12 }}
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+{{ toYaml .Values.nodePool.zones | nindent 12 }}
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+{{ toYaml .Values.nodePool.capacityTypes | nindent 12 }}
+{{- range .Values.nodePool.instanceRequirements }}
+        - key: {{ .key | quote }}
+          operator: {{ .operator }}
+          values:
+{{ toYaml .values | nindent 12 }}
+{{- with .minValues }}
+          minValues: {{ . }}
+{{- end }}
+{{- end }}
+      expireAfter: Never
+      # terminationGracePeriod is deliberately unset so the pool does not cap
+      # pod grace periods or turn drift into forced disruption.
+  limits:
+    nodes: {{ .Values.nodePool.limits.nodes | quote }}
+    cpu: {{ .Values.nodePool.limits.cpu }}
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: Never
+    budgets:
+      - nodes: "0"
