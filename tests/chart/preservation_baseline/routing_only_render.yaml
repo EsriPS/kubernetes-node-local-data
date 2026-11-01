@@ -334,7 +334,7 @@ spec:
       - key: karpenter.k8s.aws/instance-local-nvme
         operator: Gt
         values:
-        - '1199'
+        - '2399'
       - key: karpenter.k8s.aws/instance-network-bandwidth
         operator: Gt
         values:
