@@ -1,5 +1,9 @@
 # geodata-selinux-relabel-fix Bugfix Design
 
+> **Dataset and locator names in this document are placeholders** (`GEODATA2026Q2`, `*_VENDOR`),
+> substituted 2026-11-02 because this repository is public. Everything else in the captured
+> output is reproduced as recorded.
+
 ## Overview
 
 Publishing an ArcGIS geocode server that consumed the geocoding `local` PersistentVolume made

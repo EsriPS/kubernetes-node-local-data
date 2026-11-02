@@ -1,5 +1,9 @@
 # Option 1 operational sequence — task 4.7
 
+> **Dataset and locator names in this document are placeholders** (`GEODATA2026Q2`, `*_VENDOR`),
+> substituted 2026-11-02 because this repository is public. Everything else in the captured
+> output is reproduced as recorded.
+
 The one remaining mutating step of the fix: `helm upgrade` to the chart version that no longer renders
 `geodata-local-sc` and `geodata-local-pv`, followed by the prescribed PV absence check and the end-state
 verification.
