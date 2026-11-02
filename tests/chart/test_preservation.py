@@ -536,11 +536,16 @@ def test_chart_passes_the_recorded_sync_arguments(render_chart):
 #: Observed on the unfixed agent. Digests are truncated SHA-256 over the sorted
 #: names joined by newlines, so they are recorded literals rather than a
 #: re-implementation of the function under test.
+#:
+#: The fourth row's dataset names were replaced with placeholders on 2026-11-02 because this
+#: repository is public, and its digest was recomputed to match. The computation was validated
+#: first by reproducing all three original recorded digests, so the row is still a check of the
+#: function under test rather than a restatement of it.
 RECORDED_GENERATIONS = (
     ([], "none", "0"),
     (["GEODATA2026Q2"], "gda38dcffebc1", "1"),
     (["GEODATA2026Q1", "GEODATA2026Q2", "GEODATA2026Q3"], "g4d7d3b6aedbf", "3"),
-    (["Locators_HGDS", "Network_HGDS", "Routing_HGDS"], "g9c98261944db", "3"),
+    (["Locators_VENDOR", "Network_VENDOR", "Routing_VENDOR"], "g7d247bb41d03", "3"),
 )
 
 

@@ -1,5 +1,9 @@
 # geodata-selinux-relabel-fix Bugfix Design
 
+> **Dataset and locator names in this document are placeholders** (`GEODATA2026Q2`, `*_VENDOR`),
+> substituted 2026-11-02 because this repository is public. Everything else in the captured
+> output is reproduced as recorded.
+
 ## Overview
 
 Publishing an ArcGIS geocode server that consumed the geocoding `local` PersistentVolume made
@@ -360,7 +364,7 @@ Option 2's MCS exemption, is withdrawn along with Option 2.
 8. **Resolved (D5) — no category inheritance, so a clean tree stays clean (F4).** The sync agent on the
    healthy node runs as `container_t:s0:c750,c987`, yet every file it wrote is
    `system_u:object_r:local_t:s0` with no categories, including recent output
-   (`.HGDS_NA_Q2_2026.geodatabase-conch`, mtime `Sep 1 18:03`). New inodes do not take the writing
+   (`.VENDOR_NA_Q2_2026.geodatabase-conch`, mtime `Sep 1 18:03`). New inodes do not take the writing
    process's categories on this filesystem. Two consequences: this is why the tree stayed shareable for
    months, and a repaired or freshly synced tree does not drift. The recovery procedure therefore needs
    no recurring post-pass label re-check — one post-sync confirmation is enough.
@@ -462,7 +466,7 @@ failures ten seconds after container start, during ArcGIS initialisation, and no
 
 **Confirm signal 2 — it reads the mirror with arbitrary categories.** The pod reads the node-local
 mirror as `container_t:s0:c40,c511` — an arbitrary category pair, no special configuration — and
-enumerates the contents of `Locators_HGDS`, including `HGDS_Locator_APAC_Q2_2026.loc` and `.loz`, the
+enumerates the contents of `Locators_VENDOR`, including `VENDOR_Locator_APAC_Q2_2026.loc` and `.loz`, the
 `EU` locators, and so on.
 
 **Confirm signal 3, the decisive one — no relabel.** `/mnt/geodata` remained

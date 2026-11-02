@@ -1,5 +1,9 @@
 # Option 1 operational sequence — task 4.7
 
+> **Dataset and locator names in this document are placeholders** (`GEODATA2026Q2`, `*_VENDOR`),
+> substituted 2026-11-02 because this repository is public. Everything else in the captured
+> output is reproduced as recorded.
+
 The one remaining mutating step of the fix: `helm upgrade` to the chart version that no longer renders
 `geodata-local-sc` and `geodata-local-pv`, followed by the prescribed PV absence check and the end-state
 verification.
@@ -390,13 +394,13 @@ All 8 nodes, **no MCS categories anywhere**. Dataset children on both pool nodes
 ```
 ip-10-0-37-12:
   drwxr-xr-x. 5 root root       system_u:object_r:local_t:s0   80 Sep  1 01:51 /mnt/geodata
-  drwxr-xr-x. 3 4294967294 1000 system_u:object_r:local_t:s0   28 Aug  7 14:00 /mnt/geodata/HERE2026Q2
+  drwxr-xr-x. 3 4294967294 1000 system_u:object_r:local_t:s0   28 Aug  7 14:00 /mnt/geodata/GEODATA2026Q2
   drwxr-xr-x. 3 4294967294 1000 system_u:object_r:local_t:s0   20 Aug 20 19:53 /mnt/geodata/HERE_Routing_Quarterly_MGDB
-  drwxr-xr-x. 2 4294967294 1000 system_u:object_r:local_t:s0 4096 Sep  3 00:43 /mnt/geodata/Locators_HGDS
+  drwxr-xr-x. 2 4294967294 1000 system_u:object_r:local_t:s0 4096 Sep  3 00:43 /mnt/geodata/Locators_VENDOR
 ip-10-0-39-129: identical labels on the same four paths
 ```
 
-`Locators_HGDS` is the geocoding dataset. It carries the plain reference label with no categories while
+`Locators_VENDOR` is the geocoding dataset. It carries the plain reference label with no categories while
 geocode servers on both pool nodes are actively Ready against it — which is the observable difference
 Option 1 makes. Under the old arrangement that subtree was `data_t:s0:c20,c476`, specific to one pod
 instance. Serving it through the non-relabeling `hostPath` store leaves it category-free.
@@ -414,7 +418,7 @@ Matches the expected state, so nothing in the repository drifted as a result of 
 
 - **The geocode service was verified at the Kubernetes level, not the ArcGIS service level.** Readiness
   probes passing on all five geocode servers, Deployment `Available=True`, zero restarts, and a
-  category-free `Locators_HGDS` are the signals available without credentials. A REST query against the
+  category-free `Locators_VENDOR` are the signals available without credentials. A REST query against the
   published geocode endpoint was not made.
 - **The label check is a point-in-time observation.** It is strong because the mechanism is now absent by
   construction — no object in the cluster can create a relabeling mount over the tree — rather than

@@ -59,7 +59,7 @@ test_chart_passes_the_recorded_sync_arguments PASSED                            
 test_generation_digest_and_count_match_the_recorded_values[datasets0-none-0] PASSED           [ 28%]
 test_generation_digest_and_count_match_the_recorded_values[datasets1-gda38dcffebc1-1] PASSED  [ 32%]
 test_generation_digest_and_count_match_the_recorded_values[datasets2-g4d7d3b6aedbf-3] PASSED  [ 36%]
-test_generation_digest_and_count_match_the_recorded_values[datasets3-g9c98261944db-3] PASSED  [ 40%]
+test_generation_digest_and_count_match_the_recorded_values[datasets3-g7d247bb41d03-3] PASSED  [ 40%]
 test_generation_digest_is_order_independent_and_within_the_label_limit PASSED    [ 44%]
 test_write_generation_label_still_suppresses_identical_writes PASSED             [ 48%]
 test_write_generation_label_rewrites_when_labels_are_unreadable PASSED           [ 52%]
